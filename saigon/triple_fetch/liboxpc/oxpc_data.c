@@ -25,7 +25,7 @@ oxpc_data_alloc(
   }
   
   oxpc_data_t data = NULL;
-  size_t rounded_up_data_length = round_up_32(byte_length, 4);
+  size_t rounded_up_data_length = round_up_32((uint32_t)byte_length, 4);
   size_t allocation_size = sizeof(*data) + rounded_up_data_length;
   
   data = malloc(allocation_size);

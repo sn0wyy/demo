@@ -127,9 +127,13 @@ find_cs_blob(uint8_t* buf,
     struct load_command* lc = (struct load_command*)commands;
     //assert(commands + lc->cmdsize <= end, "invalid load command");
     
+//    if(commands + lc->cmdsize <= 0 || lc->cmdsize <= 0) {
+//        printf("[ERROR]: invlid load command\n");
+//    }
+
     if (lc->cmd == LC_CODE_SIGNATURE) {
       struct linkedit_data_command* cs_cmd = (struct linkedit_data_command*)lc;
-      printf("found LC_CODE_SIGNATURE blob at offset +0x%x\n", cs_cmd->dataoff);
+      printf("[INFO]: found LC_CODE_SIGNATURE blob at offset +0x%x\n", cs_cmd->dataoff);
       return ((uint8_t*)buf) + cs_cmd->dataoff;
     }
     

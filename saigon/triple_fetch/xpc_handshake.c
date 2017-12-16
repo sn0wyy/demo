@@ -93,12 +93,7 @@ lookup(
   return service_port;
 }
 
-void
-xpc_connect(
-  char* service_name,
-  mach_port_t* xpc_client_port,
-  mach_port_t* xpc_reply_port)
-{
+void xpc_connect(char* service_name, mach_port_t* xpc_client_port, mach_port_t* xpc_reply_port) {
   mach_port_t service_port = lookup(service_name);
   xpc_checkin(service_port, xpc_client_port, xpc_reply_port);
   mach_port_destroy(mach_task_self(), service_port);

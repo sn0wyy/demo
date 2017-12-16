@@ -16,10 +16,10 @@
 
 kern_return_t apple_ave_pwn_init();
 kern_return_t apple_ave_pwn_cleanup();
-kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, void ** surface_kernel_address);
-kern_return_t apple_ave_pwn_put_data_in_bulk(void * address_with_data);
-void * apple_ave_pwn_get_bad_surface_kernel_ptr();
-kern_return_t apple_ave_pwn_drop_surface_refcount(void * surface_kernel_address);
-kern_return_t apple_ave_pwn_use_fake_iosurface(void * fake_iosurface_address);
+kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, uint64_t * surface_kernel_address);
+kern_return_t apple_ave_pwn_put_data_in_bulk(uint64_t address_with_data);
+uint64_t apple_ave_pwn_get_bad_surface_kernel_ptr();
+kern_return_t apple_ave_pwn_drop_surface_refcount(uint64_t surface_kernel_address);
+kern_return_t apple_ave_pwn_use_fake_iosurface(uint64_t fake_iosurface_address);
 
 #endif /* APPLE_AVE_PWN_H_ */

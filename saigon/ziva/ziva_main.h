@@ -9,6 +9,10 @@
 #ifndef ziva_main_h
 #define ziva_main_h
 
-int ziva_go(mach_port_t tp);
+#include <mach/vm_types.h>
+
+kern_return_t ziva_go(mach_port_t tp);
+
+
 
 #endif /* ziva_main_h */

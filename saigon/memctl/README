@@ -1,0 +1,3 @@
+This directory contains code from memctl (https://github.com/bazad/memctl) that
+has been adapted for Saigon. It implements a 14-argument kernel function call
+capability on top of ziVA's 3-argument kernel function call primitive.

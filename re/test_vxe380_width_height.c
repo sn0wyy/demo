@@ -1,5 +1,11 @@
 #include <stdio.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <strings.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
 
+#include <spawn.h>
 /*
  * Has almost the same checks as the actual method 7 in VXE380
  */
@@ -77,20 +83,14 @@ int user_client_1_method_7 (int width, int surface_id) {
     return 0; // Success!
 }
 
+uint64_t sub_fffffff006dfd954(uint64_t arg0) {
+    return arg0 + 0xB8 + 0x558;
+}
+
+#define SYSCTL_PREPARE_ROP                                              ("hw.l1dcachesize")
+#define SYSCTL_EXECUTE_ROP                                              ("hw.l1icachesize")
+
 int main() {
 
-    for(int i=0; i < 100000; i++) {
-        
-        int width = 0x400049 + i; // r8
-        int surface_id = 8; // there's a check if surface id is 9 or over
-
-        printf("[INFO]: Trying 0x%x\n", width);
-
-        if  (user_client_1_method_7(width, surface_id) == 0) {
-            printf("[*] Success! Your uiWidth [0x14] input should be: 0x%x\n", width);
-            break;
-        }
-    }
-    
     return 0;
 }

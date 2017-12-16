@@ -181,7 +181,7 @@ oxpc_object_serialize_to_mach_message(
                                       0,
                                       is_complex_message ? MACH_MSGH_BITS_COMPLEX : 0);
 
-  hdr->msgh_size         = total_size;
+  hdr->msgh_size         = (mach_msg_size_t)total_size;
   hdr->msgh_remote_port  = destination_port;
   hdr->msgh_local_port   = reply_port;
   hdr->msgh_voucher_port = MACH_PORT_NULL;
@@ -191,7 +191,7 @@ oxpc_object_serialize_to_mach_message(
 
   if (is_complex_message) {
     mach_msg_body_t* body = (mach_msg_body_t*)message_body;
-    body->msgh_descriptor_count = port_list->count;
+    body->msgh_descriptor_count = (mach_msg_size_t)port_list->count;
     mach_msg_port_descriptor_t* desc = (mach_msg_port_descriptor_t*)(body+1);
 
     for (size_t i = 0; i < port_list->count; i++) {

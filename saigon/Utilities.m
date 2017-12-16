@@ -6,23 +6,98 @@
 //
 
 #import "Utilities.h"
-#include <string.h>
 #import "IOKitLib.h"
+
+#import <sys/sysctl.h>
+
+#include <stdio.h>
+#include <spawn.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/utsname.h>
+#include <Foundation/Foundation.h>
+
+#include <dirent.h>
+#include "remote_call.h"
+#include "remote_ports.h"
+#include "task_ports.h"
+
 
 // Used accross the exploits
 mach_port_t privileged_port = MACH_PORT_NULL;
 task_t launchd_task = MACH_PORT_NULL;
 mach_port_name_t self_port_name = MACH_PORT_NULL;
 
+uint64_t kern_proc = 0;
+uint64_t self_proc = 0;
+uint64_t containermanager = 0;
+
+// device info
+char * get_internal_model_name() {
+    
+    size_t len = 0;
+    char *name = malloc(len * sizeof(char));
+    sysctlbyname("hw.model", NULL, &len, NULL, 0);
+
+    if (len) {
+        sysctlbyname("hw.model", name, &len, NULL, 0);
+        printf("[INFO]: model internal name: %s\n", name);
+    } else {
+        printf("[ERROR]: could not get internal name!\n");
+    }
+
+    return name;
+}
+
 int ami_jailbroken () {
     
     struct utsname u = { 0 };
     uname(&u);
     
-    // Check if 'Marijuan' in the version (aka. we're jailbroken)
-    return (strstr(u.version, "Marijuan") != NULL);
+    // Check if 'SaigonARM' in the version (aka. we're jailbroken)
+    return (strstr(u.version, "SaigonARM") != NULL);
 }
+
+int is_cydia_installed () {
+    
+    return ([[NSFileManager defaultManager] fileExistsAtPath:@"/Applications/Cydia.app"]);
+
+}
+
+// Crashing lauchd = kernel panic
+void panic_device () {
+    
+    mach_port_t launchd_port = find_task_port_for_path("/sbin/launchd");
+    call_remote(launchd_port, readdir, 1, REMOTE_LITERAL(696969)); // ;)
+}
+
+void kill_backboardd() {
+    pid_t pid;
+    posix_spawn(&pid, "killall", 0, 0, (char**)&(const char*[]){"killall", "blackboardd", NULL}, NULL);
+}
+
+kern_return_t set_ports(mach_port_t privileged_port) {
+    
+    refresh_task_ports_list(privileged_port);
+    
+    task_t task = find_task_port_for_path("/sbin/launchd");
+
+    
+    // Set the privileged port so we can use it later
+    set_privileged_port(privileged_port, task);
+    
+    mach_port_name_t self_task_port = push_local_port(task, task, MACH_MSG_TYPE_COPY_SEND);
+    
+    if(self_task_port == MACH_PORT_NULL) {
+        return KERN_FAILURE;
+    }
+    
+    set_self_port_name(self_task_port);
+    
+    return KERN_SUCCESS;
+}
+
 
 // Sets the ports
 void set_privileged_port(mach_port_t _privileged_port, task_t _launchd_task) {
@@ -34,6 +109,21 @@ void set_privileged_port(mach_port_t _privileged_port, task_t _launchd_task) {
 // returns the priveleged port
 mach_port_t get_privileged_port() {
     return privileged_port;
+}
+
+
+// Sets the location of self, kern, and containermanager procs
+void set_procs(uint64_t _self_proc, uint64_t _kern_proc, uint64_t _containermanager) {
+    self_proc = _self_proc;
+    kern_proc = _kern_proc;
+    containermanager = _containermanager;
+}
+
+// Returns the addresses of self, kern, and containermanager procs
+void get_procs(uint64_t * _self_proc, uint64_t * _kern_proc, uint64_t * _containermanager) {
+    *_self_proc = self_proc;
+    *_kern_proc = kern_proc;
+    *_containermanager = containermanager;
 }
 
 // returns the launchd's task
@@ -49,25 +139,6 @@ void set_self_port_name(mach_port_name_t pt_name) {
 // returns launchd's port name
 mach_port_name_t get_self_port_name() {
     return self_port_name;
-}
-
-// Works only on i7, otherwise, exits - thanks to @JonathanSeals
-void kernel_panic () {
-    @autoreleasepool {
-        uint64_t input[1] = {0x0};
-        
-        io_iterator_t iterator;
-        IOServiceGetMatchingServices(kIOMasterPortDefault, IOServiceMatching("AppleHIDTransportHIDDevice"), &iterator);
-        
-        io_connect_t c = 0;
-        IOServiceOpen(IOIteratorNext(iterator), mach_task_self(), 0, &c);
-        
-        /* bye bye kernel */
-        IOConnectCallMethod(c, 13, input, 3, 0, 0, 0, 0, 0, 0);
-        
-        // no? exit then
-        exit(0);
-    }
 }
 
 

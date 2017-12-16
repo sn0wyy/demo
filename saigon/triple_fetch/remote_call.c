@@ -220,7 +220,8 @@ uint64_t call_remote(mach_port_t task_port, void* fptr, int n_params, ...)
   
   uint64_t ret_val = thread_state.__x[0];
   
-  printf("[INFO]: remote function call return value: %llx\n", ret_val);
+  if(ret_val == 0)
+      printf("[INFO]: remote function call return value: %llx\n", ret_val);
   
   // deallocate the stack in the target:
   remote_free(task_port, remote_stack_base, remote_stack_size);

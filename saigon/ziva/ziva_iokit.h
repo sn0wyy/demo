@@ -14,8 +14,6 @@
 #include <mach/message.h>
 #include <mach/mig_errors.h>
 #include <mach/port.h>
-#include "device_port.h"
-#include "device_types.h"
 	
 /* BEGIN VOUCHER CODE */
 

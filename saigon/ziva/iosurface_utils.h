@@ -28,7 +28,6 @@
 #define IOSURFACE_DICTIONARY_SIZE										(0x3C8)
 #define IOSURFACE_SURFACE_ID_OFFSET										(0x10)
 
-#define IOSURFACE_KERNEL_OBJECT_SIZE									(0x338)
 
 kern_return_t iosurface_utils_get_connection(io_connect_t * conn_out);
 kern_return_t iosurface_utils_create_surface(io_connect_t connection, uint32_t * surface_id_out, void * output_buffer);
